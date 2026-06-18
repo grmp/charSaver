@@ -3,9 +3,18 @@
 
 const MODULE_NAME = 'CharacterSaver';
 
-// Constants for character block delimiters
-const START_DELIMITER = '<!-- new character start';
-const END_DELIMITER = '-->';
+// Default settings
+const defaultSettings = {
+    startDelimiter: '<!-- new character start',
+    endDelimiter: '-->',
+};
+
+// Current settings (will be loaded from extension_settings)
+let settings = { ...defaultSettings };
+
+// Get current delimiters from settings
+const START_DELIMITER = () => settings.startDelimiter;
+const END_DELIMITER = () => settings.endDelimiter;
 
 // Import required modules
 // Note: Third-party extensions are in public/scripts/extensions/third-party/NAME/
@@ -17,6 +26,7 @@ import {
     saveChatConditional,
     saveMetadata,
     name2,
+    saveSettingsDebounced,
 } from '../../../../script.js';
 
 import {
@@ -34,7 +44,128 @@ import {
     event_types,
 } from '../../../../scripts/events.js';
 
+import {
+    extension_settings,
+} from '../../../../scripts/extensions.js';
+
 console.log(`[${MODULE_NAME}] All imports successful`);
+
+/**
+ * Loads settings from extension_settings
+ */
+function loadSettings() {
+    if (extension_settings && extension_settings.characterSaver) {
+        settings = { ...defaultSettings, ...extension_settings.characterSaver };
+        console.log(`[${MODULE_NAME}] Settings loaded:`, settings);
+    } else {
+        settings = { ...defaultSettings };
+        console.log(`[${MODULE_NAME}] Using default settings:`, settings);
+    }
+}
+
+/**
+ * Saves current settings to extension_settings
+ */
+function saveSettings() {
+    if (extension_settings) {
+        extension_settings.characterSaver = { ...settings };
+        saveSettingsDebounced();
+        console.log(`[${MODULE_NAME}] Settings saved:`, settings);
+    }
+}
+
+/**
+ * Renders the extension settings UI
+ */
+async function renderSettings() {
+    const container = document.querySelector('#char-saver-settings');
+    if (!container) {
+        console.warn(`[${MODULE_NAME}] Settings container not found`);
+        return;
+    }
+
+    // Build HTML inline (for development when extension is outside SillyTavern folder)
+    container.innerHTML = `
+<div class="character_saver_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Character Saver</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="marginBot5">
+                <label for="char_saver_start_delimiter">Start Delimiter</label>
+                <input id="char_saver_start_delimiter" class="text_pole" type="text" placeholder="<!-- new character start">
+                <small>Text that marks the beginning of a character introduction block</small>
+            </div>
+            <div class="marginBot5">
+                <label for="char_saver_end_delimiter">End Delimiter</label>
+                <input id="char_saver_end_delimiter" class="text_pole" type="text" placeholder="--&gt;">
+                <small>Text that marks the end of a character introduction block</small>
+            </div>
+            <hr class="sysHR">
+            <div class="marginBot5">
+                <label>Info</label>
+                <p class="margin0">
+                    When the AI generates text between these delimiters, Character Saver will:
+                </p>
+                <ul class="margin0">
+                    <li>Extract the character name and description</li>
+                    <li>Create a lorebook entry in the current chat's World Info</li>
+                    <li>Remove the delimiter block from the message</li>
+                </ul>
+                <p class="margin0">
+                    <small>Example: <code>&lt;!-- new character start **Name:** John Doe A brave knight... --&gt;</code></small>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>`;
+
+    // Get input elements
+    const startInput = document.getElementById('char_saver_start_delimiter');
+    const endInput = document.getElementById('char_saver_end_delimiter');
+
+    if (startInput) {
+        startInput.value = settings.startDelimiter;
+        startInput.addEventListener('input', () => {
+            settings.startDelimiter = startInput.value;
+            saveSettings();
+        });
+    }
+
+    if (endInput) {
+        endInput.value = settings.endDelimiter;
+        endInput.addEventListener('input', () => {
+            settings.endDelimiter = endInput.value;
+            saveSettings();
+        });
+    }
+
+    console.log(`[${MODULE_NAME}] Settings UI rendered`);
+}
+
+// Initialize settings
+loadSettings();
+
+// Add settings button to extensions menu
+eventSource.on(event_types.APP_READY, async () => {
+    const extensionsMenu = document.getElementById('extensions_settings');
+    if (extensionsMenu) {
+        const settingsButton = document.createElement('div');
+        settingsButton.id = 'char-saver-settings';
+        extensionsMenu.appendChild(settingsButton);
+        await renderSettings();
+    }
+});
+
+// Re-render settings when extension settings menu is opened
+eventSource.on(event_types.CHAT_CHANGED, async () => {
+    const container = document.querySelector('#extensions_settings #char-saver-settings');
+    if (container && container.offsetParent !== null) {
+        await renderSettings();
+    }
+});
 
 /**
  * Escapes special regex characters
@@ -49,7 +180,7 @@ function escapeRegExp(string) {
 function detectCharacterBlocks(messageContent) {
     const blocks = [];
     const regex = new RegExp(
-        `${escapeRegExp(START_DELIMITER)}([\\s\\S]*?)${escapeRegExp(END_DELIMITER)}`,
+        `${escapeRegExp(START_DELIMITER())}([\\s\\S]*?)${escapeRegExp(END_DELIMITER())}`,
         'gi'
     );
 
@@ -67,8 +198,8 @@ function detectCharacterBlocks(messageContent) {
 function parseCharacterBlock(block) {
     try {
         let content = block
-            .replace(new RegExp(escapeRegExp(START_DELIMITER), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(END_DELIMITER), 'gi'), '')
+            .replace(new RegExp(escapeRegExp(START_DELIMITER()), 'gi'), '')
+            .replace(new RegExp(escapeRegExp(END_DELIMITER()), 'gi'), '')
             .trim();
 
         // Look for Name: field (with or without bold markdown, various whitespace)
@@ -124,7 +255,7 @@ function parseCharacterBlock(block) {
  */
 function removeCharacterBlocks(messageContent) {
     const regex = new RegExp(
-        `\\s*${escapeRegExp(START_DELIMITER)}[\\s\\S]*?${escapeRegExp(END_DELIMITER)}\\s*`,
+        `\\s*${escapeRegExp(START_DELIMITER())}[\\s\\S]*?${escapeRegExp(END_DELIMITER())}\\s*`,
         'gi'
     );
 
@@ -312,7 +443,7 @@ if (typeof globalThis !== 'undefined') {
         MODULE_NAME,
         detectCharacterBlocks,
         parseCharacterBlock,
-        getCurrentWorldInfoName,
+        getOrCreateWorldInfoName,
         processMessage,
     };
 }
