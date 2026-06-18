@@ -5,8 +5,13 @@ const MODULE_NAME = 'CharacterSaver';
 
 // Default settings
 const defaultSettings = {
+    // Character creation settings
     startDelimiter: '<!-- new character start',
-    endDelimiter: '-->',
+    endDelimiter: 'new character end -->',
+
+    // Character update settings
+    updateStartDelimiter: '<!-- update character start',
+    updateEndDelimiter: 'update character end -->',
 };
 
 // Current settings (will be loaded from extension_settings)
@@ -99,29 +104,47 @@ async function renderSettings() {
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
-                <label for="char_saver_start_delimiter">Start Delimiter</label>
-                <input id="char_saver_start_delimiter" class="text_pole" type="text" placeholder="<!-- new character start">
-                <small>Text that marks the beginning of a character introduction block</small>
+                <label>Character Creation</label>
+                <div class="marginBot5">
+                    <label for="char_saver_start_delimiter">Start Delimiter</label>
+                    <input id="char_saver_start_delimiter" class="text_pole" type="text" placeholder="<!-- new character start">
+                    <small>Text that marks the beginning of a character introduction block</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_end_delimiter">End Delimiter</label>
+                    <input id="char_saver_end_delimiter" class="text_pole" type="text" placeholder="new character end -->">
+                    <small>Text that marks the end of a character introduction block</small>
+                </div>
             </div>
-            <div class="marginBot5">
-                <label for="char_saver_end_delimiter">End Delimiter</label>
-                <input id="char_saver_end_delimiter" class="text_pole" type="text" placeholder="--&gt;">
-                <small>Text that marks the end of a character introduction block</small>
-            </div>
+
             <hr class="sysHR">
+
+            <div class="marginBot5">
+                <label>Character Updates</label>
+                <div class="marginBot5">
+                    <label for="char_saver_update_start_delimiter">Start Delimiter</label>
+                    <input id="char_saver_update_start_delimiter" class="text_pole" type="text" placeholder="<!-- update character start">
+                    <small>Text that marks the beginning of a character progression block</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_update_end_delimiter">End Delimiter</label>
+                    <input id="char_saver_update_end_delimiter" class="text_pole" type="text" placeholder="update character end -->">
+                    <small>Text that marks the end of a character progression block</small>
+                </div>
+            </div>
+
+            <hr class="sysHR">
+
             <div class="marginBot5">
                 <label>Info</label>
                 <p class="margin0">
-                    When the AI generates text between these delimiters, Character Saver will:
+                    Character Saver automatically creates chat lorebook entries for characters introduced by the AI:
                 </p>
                 <ul class="margin0">
-                    <li>Extract the character name and description</li>
-                    <li>Create a lorebook entry in the current chat's World Info</li>
-                    <li>Remove the delimiter block from the message</li>
+                    <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>
+                    <li><b>Character Updates:</b> Creates or appends to a "Update for [Name]" entry for character progression</li>
+                    <li>Delimiter blocks are removed from messages after processing</li>
                 </ul>
-                <p class="margin0">
-                    <small>Example: <code>&lt;!-- new character start **Name:** John Doe A brave knight... --&gt;</code></small>
-                </p>
             </div>
         </div>
     </div>
@@ -130,6 +153,8 @@ async function renderSettings() {
     // Get input elements
     const startInput = document.getElementById('char_saver_start_delimiter');
     const endInput = document.getElementById('char_saver_end_delimiter');
+    const updateStartInput = document.getElementById('char_saver_update_start_delimiter');
+    const updateEndInput = document.getElementById('char_saver_update_end_delimiter');
 
     if (startInput) {
         startInput.value = settings.startDelimiter;
@@ -143,6 +168,22 @@ async function renderSettings() {
         endInput.value = settings.endDelimiter;
         endInput.addEventListener('input', () => {
             settings.endDelimiter = endInput.value;
+            saveSettings();
+        });
+    }
+
+    if (updateStartInput) {
+        updateStartInput.value = settings.updateStartDelimiter;
+        updateStartInput.addEventListener('input', () => {
+            settings.updateStartDelimiter = updateStartInput.value;
+            saveSettings();
+        });
+    }
+
+    if (updateEndInput) {
+        updateEndInput.value = settings.updateEndDelimiter;
+        updateEndInput.addEventListener('input', () => {
+            settings.updateEndDelimiter = updateEndInput.value;
             saveSettings();
         });
     }
@@ -186,6 +227,24 @@ function detectCharacterBlocks(messageContent) {
     const blocks = [];
     const regex = new RegExp(
         `${escapeRegExp(START_DELIMITER())}([\\s\\S]*?)${escapeRegExp(END_DELIMITER())}`,
+        'gi'
+    );
+
+    let match;
+    while ((match = regex.exec(messageContent)) !== null) {
+        blocks.push(match[0].trim());
+    }
+
+    return blocks;
+}
+
+/**
+ * Detects all character progression update blocks in a message
+ */
+function detectUpdateBlocks(messageContent) {
+    const blocks = [];
+    const regex = new RegExp(
+        `${escapeRegExp(settings.updateStartDelimiter)}([\\s\\S]*?)${escapeRegExp(settings.updateEndDelimiter)}`,
         'gi'
     );
 
@@ -256,6 +315,18 @@ function parseCharacterBlock(block) {
 }
 
 /**
+ * Removes character progression update blocks from a message
+ */
+function removeUpdateBlocks(messageContent) {
+    const regex = new RegExp(
+        `\\s*${escapeRegExp(settings.updateStartDelimiter)}[\\s\\S]*?${escapeRegExp(settings.updateEndDelimiter)}\\s*`,
+        'gi'
+    );
+
+    return messageContent.replace(regex, '').trim();
+}
+
+/**
  * Removes character introduction blocks from a message
  */
 function removeCharacterBlocks(messageContent) {
@@ -265,6 +336,51 @@ function removeCharacterBlocks(messageContent) {
     );
 
     return messageContent.replace(regex, '').trim();
+}
+
+/**
+ * Parses a character progression update block to extract name and content
+ */
+function parseUpdateBlock(block) {
+    try {
+        let content = block
+            .replace(new RegExp(escapeRegExp(settings.updateStartDelimiter), 'gi'), '')
+            .replace(new RegExp(escapeRegExp(settings.updateEndDelimiter), 'gi'), '')
+            .trim();
+
+        // Reuse the same namePatterns from parseCharacterBlock for consistency
+        const namePatterns = [
+            /\*\*Name\*\*:\s*(.+)/im,
+            /\*\*Name\*\*:\s*(.+)/im,
+            /Name\s*:\s*(.+)/im,
+            /^\*\*([^*]+)\*\*\s*$/m,
+            /\*\*([^*]+)\*\*\s*[\r\n]/,
+        ];
+
+        let characterName = null;
+
+        for (const pattern of namePatterns) {
+            const match = content.match(pattern);
+            if (match) {
+                characterName = match[1].trim();
+                break;
+            }
+        }
+
+        if (!characterName) {
+            console.warn(`[${MODULE_NAME}] Could not extract character name from update block`);
+            return null;
+        }
+
+        // All content is the update
+        return {
+            name: characterName,
+            content: content,
+        };
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Error parsing update block:`, error);
+        return null;
+    }
 }
 
 /**
@@ -354,6 +470,21 @@ async function getOrCreateWorldInfoName() {
 }
 
 /**
+ * Finds an existing update entry for a character by comment
+ */
+function findUpdateEntry(worldData, characterName) {
+    const targetComment = `Update for ${characterName}`;
+
+    for (const entry of Object.values(worldData.entries || {})) {
+        if (entry.comment === targetComment) {
+            return entry;
+        }
+    }
+
+    return null;
+}
+
+/**
  * Creates a new lorebook entry for a character
  */
 async function createLorebookEntry(worldName, characterName, description) {
@@ -392,6 +523,51 @@ async function createLorebookEntry(worldName, characterName, description) {
         return true;
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error creating lorebook entry:`, error);
+        return false;
+    }
+}
+
+/**
+ * Creates a new update entry or appends to an existing one
+ */
+async function createOrUpdateLorebookEntry(worldName, characterName, updateContent) {
+    try {
+        console.log(`[${MODULE_NAME}] Creating/updating entry for '${characterName}' in World Info: '${worldName}'`);
+
+        const worldData = await loadWorldInfo(worldName);
+
+        if (!worldData) {
+            console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
+            return false;
+        }
+
+        const existingEntry = findUpdateEntry(worldData, characterName);
+
+        if (existingEntry) {
+            // Append to existing entry
+            existingEntry.content += '\n' + updateContent;
+            console.log(`[${MODULE_NAME}] Appended to existing update entry for '${characterName}'`);
+        } else {
+            // Create new entry
+            const newEntry = createWorldInfoEntry(worldName, worldData);
+            newEntry.key = [characterName]; // Same trigger as character entries
+            newEntry.keysecondary = [];
+            newEntry.content = updateContent;
+            newEntry.comment = `Update for ${characterName}`;
+            newEntry.order = 100;
+            newEntry.constant = false;
+            newEntry.selective = false;
+            newEntry.depth = 4;
+            newEntry.probability = 100;
+            newEntry.position = 0;
+            console.log(`[${MODULE_NAME}] Created new update entry for '${characterName}'`);
+        }
+
+        await saveWorldInfo(worldName, worldData, true);
+        console.log(`[${MODULE_NAME}] World Info saved successfully for update: ${characterName}`);
+        return true;
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Error creating/updating lorebook entry:`, error);
         return false;
     }
 }
@@ -469,11 +645,88 @@ async function processMessage(messageId) {
     }
 }
 
+/**
+ * Processes a newly received message for character progression updates
+ */
+async function processUpdates(messageId) {
+    try {
+        const message = chat[messageId];
+
+        if (!message || message.is_user || message.is_system) {
+            return;
+        }
+
+        const messageContent = message.mes;
+
+        if (!messageContent) {
+            return;
+        }
+
+        const worldName = await getOrCreateWorldInfoName();
+
+        if (!worldName) {
+            console.warn(`[${MODULE_NAME}] Could not get or create World Info for updates`);
+            return;
+        }
+
+        const updateBlocks = detectUpdateBlocks(messageContent);
+
+        if (updateBlocks.length === 0) {
+            return;
+        }
+
+        console.log(`[${MODULE_NAME}] Found ${updateBlocks.length} character progression update(s)`);
+
+        const updatedCharacters = [];
+
+        for (const block of updateBlocks) {
+            const updateData = parseUpdateBlock(block);
+
+            if (updateData) {
+                const success = await createOrUpdateLorebookEntry(
+                    worldName,
+                    updateData.name,
+                    updateData.content
+                );
+
+                if (success) {
+                    updatedCharacters.push(updateData.name);
+                }
+            }
+        }
+
+        if (updatedCharacters.length > 0) {
+            // Remove update blocks from message (same behavior as character creation)
+            console.log(`[${MODULE_NAME}] Message BEFORE edit:\n${messageContent}`);
+            message.mes = removeUpdateBlocks(messageContent);
+            console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
+            updateMessageBlock(messageId, message);
+            await saveChatConditional();
+
+            const names = updatedCharacters.join(', ');
+            if (typeof toastr !== 'undefined') {
+                toastr.success(
+                    `Updated lorebook entries for: ${names}`,
+                    `${MODULE_NAME}`,
+                    { timeOut: 5000, preventDuplicates: true }
+                );
+            }
+
+            console.log(`[${MODULE_NAME}] Updated entries for: ${names}`);
+            // Trigger UI refresh after all updates are done
+            updateWorldInfoList();
+        }
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Error processing updates:`, error);
+    }
+}
+
 // Set up event listener
 eventSource.on(event_types.MESSAGE_RECEIVED, async (chatId, type) => {
     console.log(`[${MODULE_NAME}] MESSAGE_RECEIVED event: chatId=${chatId}, type=${type}`);
     if (chatId >= 0 && chat[chatId] && !chat[chatId].is_user) {
-        await processMessage(chatId);
+        await processMessage(chatId);       // Character creation (removes blocks)
+        await processUpdates(chatId);        // Character updates (removes blocks)
     }
 });
 
@@ -487,5 +740,11 @@ if (typeof globalThis !== 'undefined') {
         parseCharacterBlock,
         getOrCreateWorldInfoName,
         processMessage,
+        detectUpdateBlocks,
+        parseUpdateBlock,
+        removeUpdateBlocks,
+        findUpdateEntry,
+        createOrUpdateLorebookEntry,
+        processUpdates,
     };
 }
