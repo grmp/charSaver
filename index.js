@@ -48,6 +48,11 @@ import {
     extension_settings,
 } from '../../../../scripts/extensions.js';
 
+import {
+    callGenericPopup,
+    POPUP_TYPE,
+} from '../../../../scripts/popup.js';
+
 console.log(`[${MODULE_NAME}] All imports successful`);
 
 /**
@@ -270,14 +275,27 @@ async function getOrCreateWorldInfoName() {
 
     console.log(`[${MODULE_NAME}] Detected World Info name: '${worldName}'`);
     console.log(`[${MODULE_NAME}] Available World Info books:`, world_names);
+    console.log(`[${MODULE_NAME}] Full chat_metadata:`, chat_metadata);
 
     // Check if World Info exists and is valid
     if (worldName && world_names.includes(worldName)) {
         return worldName;
     }
 
-    // No World Info exists - create one
-    console.log(`[${MODULE_NAME}] No World Info found. Creating new one...`);
+    // No World Info exists - ask user if they want to create one
+    console.log(`[${MODULE_NAME}] No World Info found. Asking user...`);
+
+    const confirm = await callGenericPopup(
+        'No lorebook is attached to this chat. Would you like to create one to save the character?',
+        POPUP_TYPE.CONFIRM,
+        '',
+        { okButton: 'Create Lorebook' }
+    );
+
+    if (!confirm) {
+        console.log(`[${MODULE_NAME}] User cancelled lorebook creation`);
+        return null;
+    }
 
     // Generate a name for the new World Info using the character name
     const characterName = name2 || 'Chat';
@@ -288,7 +306,7 @@ async function getOrCreateWorldInfoName() {
     const newWorldName = `${characterName} Chat Lorebook ${dateStr} ${timeStr}`;
 
     try {
-        // Create the new World Info
+        // Create the new World Info (this also calls updateWorldInfoList internally)
         await createNewWorldInfo(newWorldName, { interactive: false });
 
         console.log(`[${MODULE_NAME}] Created new World Info: '${newWorldName}'`);
@@ -296,13 +314,37 @@ async function getOrCreateWorldInfoName() {
         // Update the chat metadata to use the new World Info
         chat_metadata[METADATA_KEY] = newWorldName;
 
+        console.log(`[${MODULE_NAME}] Set chat_metadata[${METADATA_KEY}] = '${newWorldName}'`);
+
         // Save the metadata
         await saveMetadata();
 
-        console.log(`[${MODULE_NAME}] Attached World Info to chat`);
+        console.log(`[${MODULE_NAME}] Metadata saved. Current chat_metadata[METADATA_KEY]:`, chat_metadata[METADATA_KEY]);
 
-        // Refresh the world_names list
-        await updateWorldInfoList();
+        // Wait a bit for the UI to update, then check if the lorebook is in the list
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Check if the lorebook is in world_names; if not, manually add it
+        let hasWorldInfo = world_names.includes(newWorldName);
+        if (!hasWorldInfo) {
+            console.warn(`[${MODULE_NAME}] Lorebook not found in world_names, manually adding it`);
+            world_names.push(newWorldName);
+            hasWorldInfo = true;
+        }
+
+        // Update the UI to show that a lorebook is attached
+        const chatLorebookButton = document.querySelector('.chat_lorebook_button');
+        if (chatLorebookButton) {
+            if (hasWorldInfo) {
+                chatLorebookButton.classList.add('world_set');
+                console.log(`[${MODULE_NAME}] Updated UI button state (world_set=true)`);
+            } else {
+                console.warn(`[${MODULE_NAME}] Lorebook still not found in world_names after manual add`);
+                console.log(`[${MODULE_NAME}] Current world_names:`, world_names);
+            }
+        } else {
+            console.warn(`[${MODULE_NAME}] Chat lorebook button not found`);
+        }
 
         return newWorldName;
     } catch (error) {
