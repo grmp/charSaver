@@ -559,6 +559,7 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
             newEntry.comment = `Update for ${characterName}`;
             newEntry.order = 100;
             newEntry.constant = false;
+            newEntry.vectorized = true;
             newEntry.selective = false;
             newEntry.depth = 4;
             newEntry.probability = 100;
