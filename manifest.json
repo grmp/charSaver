@@ -4,7 +4,7 @@
     "requires": [],
     "optional": [],
     "js": "index.js",
-    "author": "hornysilicon",
-    "version": "1.1.0",
-    "homePage": "https://github.com/hornysilicon/charSaver"
+    "author": "hornysilicon, grmp",
+    "version": "0.0.1",
+    "homePage": "https://github.com/grmp/charSaver"
 }

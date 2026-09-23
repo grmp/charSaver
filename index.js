@@ -514,6 +514,7 @@ async function createLorebookEntry(worldName, characterName, description) {
         newEntry.depth = 4;
         newEntry.probability = 100;
         newEntry.position = 0;
+        newEntry.vectorized = true;
 
         console.log(`[${MODULE_NAME}] Saving World Info with`, Object.keys(worldData.entries || {}).length, 'entries');
 
@@ -545,6 +546,8 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
 
         if (existingEntry) {
             // Append to existing entry
+            existingEntry.constant = false;
+            existingEntry.vectorized = true;
             existingEntry.content += '\n' + updateContent;
             console.log(`[${MODULE_NAME}] Appended to existing update entry for '${characterName}'`);
         } else {
