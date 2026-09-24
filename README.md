@@ -10,10 +10,8 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
 - Supports multiple character introductions/updates in a single message
 - Supports flexible character name formats:
   - `**Name:** John Doe`
-  - `**Name**: John Doe`
   - `Name: John Doe`
   - `**John Doe**`
-  - `<npc name="John Doe">...</npc>` and `<npc_update name="John Doe">...</npc_update>`
 - Auto-creates a lorebook if none exists
 - Shows toast notifications when characters are added or updated
 
@@ -87,20 +85,6 @@ A large security supervisor in his late 30s with a shaved head and a noticeable 
 -->
 ```
 
-### Format 4: NPC tag
-```xml
-<npc role="captain" name="María O'Connell">
-Tall, observant, and habitually carries a brass compass.
-</npc>
-```
-
-`<npc>` and `<npc_update>` names may use single or double quotes. Tag and attribute
-capitalization, attribute order, extra attributes, and whitespace (including line
-breaks around attributes and `=`) are accepted. XML/HTML entities in names are
-decoded, so `name="John &amp; Jane"` is saved as `John & Jane`.
-The complete tag-containing content is stored verbatim in the lorebook; only the
-configured legacy delimiters surrounding it are omitted.
-
 ## Character Update Format
 
 When updating existing characters, use the update delimiters:
@@ -115,15 +99,6 @@ Name: Verena Cortez
 
 If an "Update for [Name]" entry already exists, new content will be appended to it.
 
-Updates may alternatively use a tag. The complete tag is retained in the stored
-update, including attributes such as `timestamp`:
-
-```xml
-<npc_update timestamp="2024-07-07T08:39" name="John Doe">
-Promoted to Captain.
-</npc_update>
-```
-
 ## Supported Name Formats
 
 The extension recognizes character names in various formats:
@@ -131,31 +106,19 @@ The extension recognizes character names in various formats:
 - `**Name:** Character Name`
 - `**Name**: Character Name`
 - `**Character Name**` (standalone bolded name)
-- `<npc name="Character Name">...</npc>` for introductions
-- `<npc_update name="Character Name">...</npc_update>` for updates
-
-Tags may appear inside the configured legacy delimiters or as standalone blocks.
-A standalone non-self-closing tag **must have its matching closing tag**; malformed
-or unclosed tags are left untouched. Self-closing forms such as
-`<npc name="John Doe" />` and `<npc_update name='John Doe' />` are supported as
-self-contained blocks. Missing or empty `name` attributes are not processed.
-Although the `name` attribute is decoded to identify the lorebook entry, paired
-tags, opening tags inside legacy delimiter blocks, and self-closing tags are all
-retained in the entry content. Legacy Name/bold syntax continues to be removed
-from the stored content after name extraction.
 
 ## How It Works
 
 ### Character Creation
 1. When the AI generates a message with character introductions
-2. The extension detects configured delimiter blocks and standalone `<npc>` blocks
+2. The extension detects the `<!-- new character start` ... `new character end -->` delimiters
 3. Extracts the character name and description
 4. Creates a lorebook entry with the character name as the keyword
 5. Removes the introduction block from the displayed message
 
 ### Character Updates
 1. When the AI generates a message with character progression/updates
-2. The extension detects configured delimiter blocks and standalone `<npc_update>` blocks
+2. The extension detects the `<!-- update character start` ... `update character end -->` delimiters
 3. Extracts the character name and update content
 4. Creates or appends to a lorebook entry with the comment "Update for [Name]"
 5. Removes the update block from the displayed message

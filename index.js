@@ -3,12 +3,6 @@
 
 const MODULE_NAME = 'CharacterSaver';
 
-import {
-    detectBlockRanges,
-    parseBlock,
-    removeRanges,
-} from './parser.js';
-
 // Default settings
 const defaultSettings = {
     // Character creation settings
@@ -149,10 +143,7 @@ async function renderSettings() {
                 <ul class="margin0">
                     <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>
                     <li><b>Character Updates:</b> Creates or appends to a "Update for [Name]" entry for character progression</li>
-                    <li>Names may use legacy Name/bold syntax or an <code>&lt;npc name="..."&gt;</code> / <code>&lt;npc_update name="..."&gt;</code> tag</li>
-                    <li>Tags work inside configured delimiter blocks; standalone paired tags require a closing tag. Self-closing tags are also supported.</li>
-                    <li>Tag markup and attributes are retained in lorebook content; legacy Name/bold metadata is removed after extraction.</li>
-                    <li>Successfully processed delimiter or tag blocks are removed from messages</li>
+                    <li>Delimiter blocks are removed from messages after processing</li>
                 </ul>
             </div>
         </div>
@@ -222,21 +213,47 @@ eventSource.on(event_types.CHAT_CHANGED, async () => {
     }
 });
 
-const characterDelimiters = () => ({ start: START_DELIMITER(), end: END_DELIMITER() });
-const updateDelimiters = () => ({ start: settings.updateStartDelimiter, end: settings.updateEndDelimiter });
+/**
+ * Escapes special regex characters
+ */
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * Detects all character introduction blocks in a message
  */
 function detectCharacterBlocks(messageContent) {
-    return detectBlockRanges(messageContent, 'character', characterDelimiters()).map(block => block.text);
+    const blocks = [];
+    const regex = new RegExp(
+        `${escapeRegExp(START_DELIMITER())}([\\s\\S]*?)${escapeRegExp(END_DELIMITER())}`,
+        'gi'
+    );
+
+    let match;
+    while ((match = regex.exec(messageContent)) !== null) {
+        blocks.push(match[0].trim());
+    }
+
+    return blocks;
 }
 
 /**
  * Detects all character progression update blocks in a message
  */
 function detectUpdateBlocks(messageContent) {
-    return detectBlockRanges(messageContent, 'update', updateDelimiters()).map(block => block.text);
+    const blocks = [];
+    const regex = new RegExp(
+        `${escapeRegExp(settings.updateStartDelimiter)}([\\s\\S]*?)${escapeRegExp(settings.updateEndDelimiter)}`,
+        'gi'
+    );
+
+    let match;
+    while ((match = regex.exec(messageContent)) !== null) {
+        blocks.push(match[0].trim());
+    }
+
+    return blocks;
 }
 
 /**
@@ -244,12 +261,53 @@ function detectUpdateBlocks(messageContent) {
  */
 function parseCharacterBlock(block) {
     try {
-        const character = parseBlock(block, 'character', characterDelimiters());
-        if (!character) {
+        let content = block
+            .replace(new RegExp(escapeRegExp(START_DELIMITER()), 'gi'), '')
+            .replace(new RegExp(escapeRegExp(END_DELIMITER()), 'gi'), '')
+            .trim();
+
+        // Look for Name: field (with or without bold markdown, various whitespace)
+        // Or just a bolded name like **John Doe**
+        const namePatterns = [
+            /\*\*Name\*\*:\s*(.+)/im,           // **Name:** X
+            /\*\*Name\*\*:\s*(.+)/im,            // **Name**: X
+            /Name\s*:\s*(.+)/im,                 // Name: X
+            /^\*\*([^*]+)\*\*\s*$/m,             // **John Doe** (standalone, first line)
+            /\*\*([^*]+)\*\*\s*[\r\n]/,          // **John Doe** (followed by newline)
+        ];
+
+        let characterName = null;
+        let namePatternUsed = null;
+
+        for (const pattern of namePatterns) {
+            const match = content.match(pattern);
+            if (match) {
+                characterName = match[1].trim();
+                namePatternUsed = pattern;
+                console.log(`[${MODULE_NAME}] Found character name: '${characterName}'`);
+                break;
+            }
+        }
+
+        if (!characterName) {
             console.warn(`[${MODULE_NAME}] Could not extract character name from block`);
+            console.debug(`[${MODULE_NAME}] Block content:`, content);
             return null;
         }
-        return character;
+
+        if (!characterName) {
+            console.warn(`[${MODULE_NAME}] Empty character name in block`);
+            return null;
+        }
+
+        // The entire block (excluding delimiters) is the description
+        // Remove the Name line from the description to avoid redundancy
+        const description = namePatternUsed ? content.replace(namePatternUsed, '').trim() : content.trim();
+
+        return {
+            name: characterName,
+            description: description || `Character named ${characterName}`,
+        };
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error parsing character block:`, error);
         return null;
@@ -259,19 +317,25 @@ function parseCharacterBlock(block) {
 /**
  * Removes character progression update blocks from a message
  */
-function removeUpdateBlocks(messageContent, ranges = null) {
-    const blocks = ranges ?? detectBlockRanges(messageContent, 'update', updateDelimiters())
-        .filter(block => parseUpdateBlock(block.text));
-    return removeRanges(messageContent, blocks);
+function removeUpdateBlocks(messageContent) {
+    const regex = new RegExp(
+        `\\s*${escapeRegExp(settings.updateStartDelimiter)}[\\s\\S]*?${escapeRegExp(settings.updateEndDelimiter)}\\s*`,
+        'gi'
+    );
+
+    return messageContent.replace(regex, '').trim();
 }
 
 /**
  * Removes character introduction blocks from a message
  */
-function removeCharacterBlocks(messageContent, ranges = null) {
-    const blocks = ranges ?? detectBlockRanges(messageContent, 'character', characterDelimiters())
-        .filter(block => parseCharacterBlock(block.text));
-    return removeRanges(messageContent, blocks);
+function removeCharacterBlocks(messageContent) {
+    const regex = new RegExp(
+        `\\s*${escapeRegExp(START_DELIMITER())}[\\s\\S]*?${escapeRegExp(END_DELIMITER())}\\s*`,
+        'gi'
+    );
+
+    return messageContent.replace(regex, '').trim();
 }
 
 /**
@@ -279,12 +343,40 @@ function removeCharacterBlocks(messageContent, ranges = null) {
  */
 function parseUpdateBlock(block) {
     try {
-        const update = parseBlock(block, 'update', updateDelimiters());
-        if (!update) {
+        let content = block
+            .replace(new RegExp(escapeRegExp(settings.updateStartDelimiter), 'gi'), '')
+            .replace(new RegExp(escapeRegExp(settings.updateEndDelimiter), 'gi'), '')
+            .trim();
+
+        // Reuse the same namePatterns from parseCharacterBlock for consistency
+        const namePatterns = [
+            /\*\*Name\*\*:\s*(.+)/im,
+            /\*\*Name\*\*:\s*(.+)/im,
+            /Name\s*:\s*(.+)/im,
+            /^\*\*([^*]+)\*\*\s*$/m,
+            /\*\*([^*]+)\*\*\s*[\r\n]/,
+        ];
+
+        let characterName = null;
+
+        for (const pattern of namePatterns) {
+            const match = content.match(pattern);
+            if (match) {
+                characterName = match[1].trim();
+                break;
+            }
+        }
+
+        if (!characterName) {
             console.warn(`[${MODULE_NAME}] Could not extract character name from update block`);
             return null;
         }
-        return update;
+
+        // All content is the update
+        return {
+            name: characterName,
+            content: content,
+        };
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error parsing update block:`, error);
         return null;
@@ -508,7 +600,7 @@ async function processMessage(messageId) {
             return;
         }
 
-        const characterBlocks = detectBlockRanges(messageContent, 'character', characterDelimiters());
+        const characterBlocks = detectCharacterBlocks(messageContent);
 
         if (characterBlocks.length === 0) {
             return;
@@ -517,10 +609,9 @@ async function processMessage(messageId) {
         console.log(`[${MODULE_NAME}] Found ${characterBlocks.length} character introduction(s)`);
 
         const createdCharacters = [];
-        const processedBlocks = [];
 
         for (const block of characterBlocks) {
-            const characterData = parseCharacterBlock(block.text);
+            const characterData = parseCharacterBlock(block);
 
             if (characterData) {
                 const success = await createLorebookEntry(
@@ -531,14 +622,13 @@ async function processMessage(messageId) {
 
                 if (success) {
                     createdCharacters.push(characterData.name);
-                    processedBlocks.push(block);
                 }
             }
         }
 
         if (createdCharacters.length > 0) {
             console.log(`[${MODULE_NAME}] Message BEFORE edit:\n${messageContent}`);
-            message.mes = removeCharacterBlocks(messageContent, processedBlocks);
+            message.mes = removeCharacterBlocks(messageContent);
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
@@ -583,7 +673,7 @@ async function processUpdates(messageId) {
             return;
         }
 
-        const updateBlocks = detectBlockRanges(messageContent, 'update', updateDelimiters());
+        const updateBlocks = detectUpdateBlocks(messageContent);
 
         if (updateBlocks.length === 0) {
             return;
@@ -592,10 +682,9 @@ async function processUpdates(messageId) {
         console.log(`[${MODULE_NAME}] Found ${updateBlocks.length} character progression update(s)`);
 
         const updatedCharacters = [];
-        const processedBlocks = [];
 
         for (const block of updateBlocks) {
-            const updateData = parseUpdateBlock(block.text);
+            const updateData = parseUpdateBlock(block);
 
             if (updateData) {
                 const success = await createOrUpdateLorebookEntry(
@@ -606,7 +695,6 @@ async function processUpdates(messageId) {
 
                 if (success) {
                     updatedCharacters.push(updateData.name);
-                    processedBlocks.push(block);
                 }
             }
         }
@@ -614,7 +702,7 @@ async function processUpdates(messageId) {
         if (updatedCharacters.length > 0) {
             // Remove update blocks from message (same behavior as character creation)
             console.log(`[${MODULE_NAME}] Message BEFORE edit:\n${messageContent}`);
-            message.mes = removeUpdateBlocks(messageContent, processedBlocks);
+            message.mes = removeUpdateBlocks(messageContent);
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
@@ -654,7 +742,6 @@ if (typeof globalThis !== 'undefined') {
         MODULE_NAME,
         detectCharacterBlocks,
         parseCharacterBlock,
-        removeCharacterBlocks,
         getOrCreateWorldInfoName,
         processMessage,
         detectUpdateBlocks,

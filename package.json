@@ -1,8 +1,0 @@
-{
-  "name": "character-saver",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --test"
-  }
-}
