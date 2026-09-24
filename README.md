@@ -12,6 +12,7 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
   - `**Name:** John Doe`
   - `Name: John Doe`
   - `**John Doe**`
+  - `<npc name="John Doe">...</npc>` and `<npc_update name="John Doe">...</npc_update>` inside the configured delimiters
 - Auto-creates a lorebook if none exists
 - Shows toast notifications when characters are added or updated
 
@@ -99,6 +100,39 @@ Name: Verena Cortez
 
 If an "Update for [Name]" entry already exists, new content will be appended to it.
 
+## NPC XML Tags
+
+Names may also be supplied through the `name` attribute of an `npc` or
+`npc_update` tag. The existing comment delimiters are still required and determine
+whether to create a character entry or an update. Tags outside those delimiters
+do not trigger processing.
+
+```xml
+<!-- new character start
+<npc role="captain" name="María O'Connell">
+Tall, observant, and habitually carries a brass compass.
+</npc>
+new character end -->
+```
+
+```xml
+<!-- update character start
+<npc_update timestamp="2026-09-24" name="María O'Connell" location="Harbor">
+Promoted to admiral.
+</npc_update>
+update character end -->
+```
+
+Additional attributes may appear in any order. Single or double quotes,
+whitespace around `=`, multiline attributes, and different capitalization of
+tag and attribute names are supported. A nonempty `name` attribute takes priority
+over any Name line or bolded name in the block; otherwise the existing name
+formats are tried.
+
+The complete content inside the delimiters is retained for XML blocks, including
+opening and closing tags, attributes, and internal formatting. Only the surrounding
+delimiters and outer whitespace are removed. Existing updates are appended as before.
+
 ## Supported Name Formats
 
 The extension recognizes character names in various formats:
@@ -106,6 +140,10 @@ The extension recognizes character names in various formats:
 - `**Name:** Character Name`
 - `**Name**: Character Name`
 - `**Character Name**` (standalone bolded name)
+- `<npc name="Character Name">...</npc>` (inside the configured delimiters)
+- `<npc_update name="Character Name">...</npc_update>` (inside the configured delimiters)
+
+Regression tests can be run with `node --test test/*.test.mjs`.
 
 ## How It Works
 

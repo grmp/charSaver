@@ -257,6 +257,29 @@ function detectUpdateBlocks(messageContent) {
 }
 
 /**
+ * Reads NPC name attributes without parsing or rewriting the stored XML.
+ * A non-null result also marks tag content that must survive legacy fallback.
+ */
+function extractNpcName(content) {
+    const tags = /<(?:npc_update|npc)(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/gi;
+    let result = null;
+
+    for (const tag of content.matchAll(tags)) {
+        result = { name: null };
+        // Consume complete attributes so a quoted value containing `name=`
+        // cannot be mistaken for the actual name attribute.
+        const attributes = /\s+([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+        for (const attribute of tag[1].matchAll(attributes)) {
+            if (attribute[1].toLowerCase() !== 'name') continue;
+            const name = (attribute[2] ?? attribute[3] ?? '').trim();
+            if (name) return { name };
+        }
+    }
+
+    return result;
+}
+
+/**
  * Parses a character block to extract name and description
  */
 function parseCharacterBlock(block) {
@@ -266,10 +289,15 @@ function parseCharacterBlock(block) {
             .replace(new RegExp(escapeRegExp(END_DELIMITER()), 'gi'), '')
             .trim();
 
+        const npc = extractNpcName(content);
+        if (npc?.name) {
+            return { name: npc.name, description: content };
+        }
+
         // Look for Name: field (with or without bold markdown, various whitespace)
         // Or just a bolded name like **John Doe**
         const namePatterns = [
-            /\*\*Name\*\*:\s*(.+)/im,           // **Name:** X
+            /\*\*Name:\*\*\s*(.+)/im,           // **Name:** X
             /\*\*Name\*\*:\s*(.+)/im,            // **Name**: X
             /Name\s*:\s*(.+)/im,                 // Name: X
             /^\*\*([^*]+)\*\*\s*$/m,             // **John Doe** (standalone, first line)
@@ -302,7 +330,7 @@ function parseCharacterBlock(block) {
 
         // The entire block (excluding delimiters) is the description
         // Remove the Name line from the description to avoid redundancy
-        const description = namePatternUsed ? content.replace(namePatternUsed, '').trim() : content.trim();
+        const description = namePatternUsed && !npc ? content.replace(namePatternUsed, '').trim() : content.trim();
 
         return {
             name: characterName,
@@ -348,9 +376,14 @@ function parseUpdateBlock(block) {
             .replace(new RegExp(escapeRegExp(settings.updateEndDelimiter), 'gi'), '')
             .trim();
 
+        const npc = extractNpcName(content);
+        if (npc?.name) {
+            return { name: npc.name, content };
+        }
+
         // Reuse the same namePatterns from parseCharacterBlock for consistency
         const namePatterns = [
-            /\*\*Name\*\*:\s*(.+)/im,
+            /\*\*Name:\*\*\s*(.+)/im,
             /\*\*Name\*\*:\s*(.+)/im,
             /Name\s*:\s*(.+)/im,
             /^\*\*([^*]+)\*\*\s*$/m,
