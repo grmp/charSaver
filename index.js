@@ -12,10 +12,28 @@ const defaultSettings = {
     // Character update settings
     updateStartDelimiter: '<!-- update character start',
     updateEndDelimiter: 'update character end -->',
+    separateUpdateEntries: false,
+    updateEntryCounters: [],
 };
 
 // Current settings (will be loaded from extension_settings)
 let settings = { ...defaultSettings };
+
+// Serialize all entry writes to a lorebook, including character creation.
+const worldWriteQueues = new Map();
+
+async function queueWorldWrite(worldName, write) {
+    const previous = worldWriteQueues.get(worldName) || Promise.resolve();
+    const pending = previous.catch(() => {}).then(write);
+    worldWriteQueues.set(worldName, pending);
+    try {
+        return await pending;
+    } finally {
+        if (worldWriteQueues.get(worldName) === pending) {
+            worldWriteQueues.delete(worldName);
+        }
+    }
+}
 
 // Get current delimiters from settings
 const START_DELIMITER = () => settings.startDelimiter;
@@ -122,6 +140,13 @@ async function renderSettings() {
             <div class="marginBot5">
                 <label>Character Updates</label>
                 <div class="marginBot5">
+                    <label class="checkbox_label" for="char_saver_separate_update_entries">
+                        <input id="char_saver_separate_update_entries" type="checkbox">
+                        <span>Save each update as a separate entry</span>
+                    </label>
+                    <small>Off: append to "Update for [Name]". On: create "Update #1 for [Name]", "Update #2 for [Name]", etc. Numbers increase per character and lorebook, even after deleting entries.</small>
+                </div>
+                <div class="marginBot5">
                     <label for="char_saver_update_start_delimiter">Start Delimiter</label>
                     <input id="char_saver_update_start_delimiter" class="text_pole" type="text" placeholder="<!-- update character start">
                     <small>Text that marks the beginning of a character progression block</small>
@@ -142,7 +167,7 @@ async function renderSettings() {
                 </p>
                 <ul class="margin0">
                     <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>
-                    <li><b>Character Updates:</b> Creates or appends to a "Update for [Name]" entry for character progression</li>
+                    <li><b>Character Updates:</b> Appends to "Update for [Name]" or creates separate numbered entries, depending on the setting above</li>
                     <li>Delimiter blocks are removed from messages after processing</li>
                 </ul>
             </div>
@@ -155,6 +180,15 @@ async function renderSettings() {
     const endInput = document.getElementById('char_saver_end_delimiter');
     const updateStartInput = document.getElementById('char_saver_update_start_delimiter');
     const updateEndInput = document.getElementById('char_saver_update_end_delimiter');
+    const separateUpdatesInput = document.getElementById('char_saver_separate_update_entries');
+
+    if (separateUpdatesInput) {
+        separateUpdatesInput.checked = settings.separateUpdateEntries === true;
+        separateUpdatesInput.addEventListener('change', () => {
+            settings.separateUpdateEntries = separateUpdatesInput.checked;
+            saveSettings();
+        });
+    }
 
     if (startInput) {
         startInput.value = settings.startDelimiter;
@@ -521,92 +555,129 @@ function findUpdateEntry(worldData, characterName) {
  * Creates a new lorebook entry for a character
  */
 async function createLorebookEntry(worldName, characterName, description) {
-    try {
-        console.log(`[${MODULE_NAME}] Creating entry for '${characterName}' in World Info: '${worldName}'`);
+    return queueWorldWrite(worldName, async () => {
+        try {
+            console.log(`[${MODULE_NAME}] Creating entry for '${characterName}' in World Info: '${worldName}'`);
 
-        const worldData = await loadWorldInfo(worldName);
+            const worldData = structuredClone(await loadWorldInfo(worldName));
 
-        if (!worldData) {
-            console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
-            return false;
-        }
+            if (!worldData) {
+                console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
+                return false;
+            }
 
-        console.log(`[${MODULE_NAME}] World Info loaded, entries before:`, Object.keys(worldData.entries || {}).length);
+            console.log(`[${MODULE_NAME}] World Info loaded, entries before:`, Object.keys(worldData.entries || {}).length);
 
-        const newEntry = createWorldInfoEntry(worldName, worldData);
-
-        console.log(`[${MODULE_NAME}] Created new entry with UID:`, newEntry.uid);
-
-        newEntry.key = [characterName];
-        newEntry.keysecondary = [];
-        newEntry.content = description;
-        newEntry.comment = `Character: ${characterName}`;
-        newEntry.order = 100;
-        newEntry.constant = false;
-        newEntry.selective = false;
-        newEntry.depth = 4;
-        newEntry.probability = 100;
-        newEntry.position = 0;
-        newEntry.vectorized = true;
-
-        console.log(`[${MODULE_NAME}] Saving World Info with`, Object.keys(worldData.entries || {}).length, 'entries');
-
-        await saveWorldInfo(worldName, worldData, true);
-
-        console.log(`[${MODULE_NAME}] World Info saved successfully for: ${characterName}`);
-        return true;
-    } catch (error) {
-        console.error(`[${MODULE_NAME}] Error creating lorebook entry:`, error);
-        return false;
-    }
-}
-
-/**
- * Creates a new update entry or appends to an existing one
- */
-async function createOrUpdateLorebookEntry(worldName, characterName, updateContent) {
-    try {
-        console.log(`[${MODULE_NAME}] Creating/updating entry for '${characterName}' in World Info: '${worldName}'`);
-
-        const worldData = await loadWorldInfo(worldName);
-
-        if (!worldData) {
-            console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
-            return false;
-        }
-
-        const existingEntry = findUpdateEntry(worldData, characterName);
-
-        if (existingEntry) {
-            // Append to existing entry
-            existingEntry.constant = false;
-            existingEntry.vectorized = true;
-            existingEntry.content += '\n' + updateContent;
-            console.log(`[${MODULE_NAME}] Appended to existing update entry for '${characterName}'`);
-        } else {
-            // Create new entry
             const newEntry = createWorldInfoEntry(worldName, worldData);
-            newEntry.key = [characterName]; // Same trigger as character entries
+
+            console.log(`[${MODULE_NAME}] Created new entry with UID:`, newEntry.uid);
+
+            newEntry.key = [characterName];
             newEntry.keysecondary = [];
-            newEntry.content = updateContent;
-            newEntry.comment = `Update for ${characterName}`;
+            newEntry.content = description;
+            newEntry.comment = `Character: ${characterName}`;
             newEntry.order = 100;
             newEntry.constant = false;
-            newEntry.vectorized = true;
             newEntry.selective = false;
             newEntry.depth = 4;
             newEntry.probability = 100;
             newEntry.position = 0;
-            console.log(`[${MODULE_NAME}] Created new update entry for '${characterName}'`);
-        }
+            newEntry.vectorized = true;
 
-        await saveWorldInfo(worldName, worldData, true);
-        console.log(`[${MODULE_NAME}] World Info saved successfully for update: ${characterName}`);
-        return true;
-    } catch (error) {
-        console.error(`[${MODULE_NAME}] Error creating/updating lorebook entry:`, error);
-        return false;
+            console.log(`[${MODULE_NAME}] Saving World Info with`, Object.keys(worldData.entries || {}).length, 'entries');
+
+            await saveWorldInfo(worldName, worldData, true);
+
+            console.log(`[${MODULE_NAME}] World Info saved successfully for: ${characterName}`);
+            return true;
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Error creating lorebook entry:`, error);
+            return false;
+        }
+    });
+}
+
+/**
+ * Chooses a number above both the saved high-water mark and existing entries.
+ */
+function nextUpdateNumber(worldData, worldName, characterName) {
+    const counters = Array.isArray(settings.updateEntryCounters) ? settings.updateEntryCounters : [];
+    let highest = 0;
+    for (const counter of counters) {
+        if (counter?.worldName === worldName && counter.characterName === characterName
+            && Number.isSafeInteger(counter.lastNumber) && counter.lastNumber > highest) {
+            highest = counter.lastNumber;
+        }
     }
+    for (const entry of Object.values(worldData.entries || {})) {
+        const match = /^Update #([1-9]\d*) for ([\s\S]*)$/.exec(entry.comment || '');
+        if (match && match[2] === characterName) {
+            const number = Number(match[1]);
+            if (!Number.isSafeInteger(number)) throw new Error('Update number exceeds safe integer range');
+            highest = Math.max(highest, number);
+        }
+    }
+    if (highest >= Number.MAX_SAFE_INTEGER) throw new Error('Update number exceeds safe integer range');
+    return highest + 1;
+}
+
+/**
+ * Creates a numbered update entry or appends to the unnumbered entry.
+ */
+async function createOrUpdateLorebookEntry(worldName, characterName, updateContent) {
+    const separateUpdates = settings.separateUpdateEntries === true;
+    return queueWorldWrite(worldName, async () => {
+        try {
+            console.log(`[${MODULE_NAME}] Creating/updating entry for '${characterName}' in World Info: '${worldName}'`);
+
+            const worldData = structuredClone(await loadWorldInfo(worldName));
+
+            if (!worldData) {
+                console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
+                return false;
+            }
+
+            const number = separateUpdates ? nextUpdateNumber(worldData, worldName, characterName) : null;
+            const existingEntry = separateUpdates ? null : findUpdateEntry(worldData, characterName);
+
+            if (existingEntry) {
+                // Append to existing entry
+                existingEntry.constant = false;
+                existingEntry.vectorized = true;
+                existingEntry.content += '\n' + updateContent;
+                console.log(`[${MODULE_NAME}] Appended to existing update entry for '${characterName}'`);
+            } else {
+                // Create new entry
+                const newEntry = createWorldInfoEntry(worldName, worldData);
+                newEntry.key = [characterName]; // Same trigger as character entries
+                newEntry.keysecondary = [];
+                newEntry.content = updateContent;
+                newEntry.comment = separateUpdates ? `Update #${number} for ${characterName}` : `Update for ${characterName}`;
+                newEntry.order = 100;
+                newEntry.constant = false;
+                newEntry.vectorized = true;
+                newEntry.selective = false;
+                newEntry.depth = 4;
+                newEntry.probability = 100;
+                newEntry.position = 0;
+                console.log(`[${MODULE_NAME}] Created new update entry for '${characterName}'`);
+            }
+
+            await saveWorldInfo(worldName, worldData, true);
+            if (separateUpdates) {
+                const counters = Array.isArray(settings.updateEntryCounters) ? settings.updateEntryCounters : [];
+                settings.updateEntryCounters = counters.filter(counter =>
+                    counter?.worldName !== worldName || counter.characterName !== characterName);
+                settings.updateEntryCounters.push({ worldName, characterName, lastNumber: number });
+                saveSettings();
+            }
+            console.log(`[${MODULE_NAME}] World Info saved successfully for update: ${characterName}`);
+            return true;
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Error creating/updating lorebook entry:`, error);
+            return false;
+        }
+    });
 }
 
 /**
