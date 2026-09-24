@@ -5,9 +5,14 @@ import { detectBlockRanges, extractName, parseBlock, removeRanges } from '../par
 const creation = { start: '<!-- new character start', end: 'new character end -->' };
 const updates = { start: '<!-- update character start', end: 'update character end -->' };
 
-test('shared extraction supports every legacy spelling', () => {
+test('shared extraction preserves every legacy spelling result', () => {
+    const expected = { name: 'John Doe', content: 'Description' };
     for (const source of ['Name: John Doe', '**Name:** John Doe', '**Name**: John Doe', '**John Doe**']) {
-        assert.deepEqual(extractName(`${source}\nDescription`), { name: 'John Doe', content: 'Description' });
+        assert.deepEqual(extractName(`${source}\nDescription`), expected);
+        assert.deepEqual(parseBlock(`${creation.start}\n${source}\nDescription\n${creation.end}`, 'character', creation), {
+            name: 'John Doe',
+            description: 'Description',
+        });
     }
 });
 
@@ -15,27 +20,27 @@ test('creation tag accepts rich attributes, whitespace, case, entities and punct
     const block = `<NPC role='lead'\n NAME \n = \n "  Zoë O&apos;Neil &amp; 李  " data-id='7'>\nA detective.\n</nPc>`;
     assert.deepEqual(parseBlock(block, 'character', creation), {
         name: "Zoë O'Neil & 李",
-        description: 'A detective.',
+        description: block,
     });
 });
 
-test('update timestamps work before or after name with both quote styles', () => {
+test('update name and timestamp attributes remain in retained paired tags', () => {
     for (const block of [
         `<npc_update timestamp='2024-07-07T08:39' name="John Doe">Promoted.</npc_update>`,
         `<NPC_UPDATE NAME='John Doe' extra="yes" TIMESTAMP = "2024-07-07T08:39">Promoted.</NPC_UPDATE>`,
     ]) {
         assert.deepEqual(parseBlock(block, 'update', updates), {
             name: 'John Doe',
-            content: 'Timestamp: 2024-07-07T08:39\nPromoted.',
+            content: block,
         });
     }
 });
 
-test('tag metadata is removed inside legacy blocks while descriptive content remains', () => {
+test('tags inside legacy blocks are retained while delimiters are removed', () => {
     const character = `${creation.start}\n<npc name="Ada Lovelace">\nMathematician\n${creation.end}`;
     const update = `${updates.start}\n<npc_update name="Ada Lovelace">\nLearned something.\n${updates.end}`;
-    assert.equal(parseBlock(character, 'character', creation).description, 'Mathematician');
-    assert.equal(parseBlock(update, 'update', updates).content, 'Learned something.');
+    assert.equal(parseBlock(character, 'character', creation).description, '<npc name="Ada Lovelace">\nMathematician');
+    assert.equal(parseBlock(update, 'update', updates).content, '<npc_update name="Ada Lovelace">\nLearned something.');
 });
 
 test('paired and self-closing standalone tags are detected in mixed messages', () => {
@@ -45,6 +50,8 @@ test('paired and self-closing standalone tags are detected in mixed messages', (
     assert.equal(ranges.length, 3);
     assert.deepEqual(ranges.map(range => parseBlock(range.text, 'character', creation).name),
         ['Legacy Person', 'Pair Person', 'Solo Person']);
+    assert.equal(parseBlock(ranges[1].text, 'character', creation).description, "<npc name='Pair Person'>Paired</npc>");
+    assert.equal(parseBlock(ranges[2].text, 'character', creation).description, '<npc name="Solo Person" />');
     assert.equal(removeRanges(message, ranges), 'before\n\nmiddle\n\n\nafter');
 });
 
@@ -69,8 +76,8 @@ test('multiple mixed update blocks retain meaningful content', () => {
     const parsed = detectBlockRanges(message, 'update', updates).map(range => parseBlock(range.text, 'update', updates));
     assert.deepEqual(parsed, [
         { name: 'Renée Smith-Jones', content: 'Changed roles.' },
-        { name: '李 雷', content: 'Moved.' },
-        { name: 'Self Close', content: 'Timestamp: noon' },
+        { name: '李 雷', content: "<npc_update name='李 雷'>Moved.</npc_update>" },
+        { name: 'Self Close', content: "<npc_update timestamp='noon' name='Self Close' />" },
     ]);
 });
 

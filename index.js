@@ -151,6 +151,7 @@ async function renderSettings() {
                     <li><b>Character Updates:</b> Creates or appends to a "Update for [Name]" entry for character progression</li>
                     <li>Names may use legacy Name/bold syntax or an <code>&lt;npc name="..."&gt;</code> / <code>&lt;npc_update name="..."&gt;</code> tag</li>
                     <li>Tags work inside configured delimiter blocks; standalone paired tags require a closing tag. Self-closing tags are also supported.</li>
+                    <li>Tag markup and attributes are retained in lorebook content; legacy Name/bold metadata is removed after extraction.</li>
                     <li>Successfully processed delimiter or tag blocks are removed from messages</li>
                 </ul>
             </div>

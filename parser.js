@@ -44,7 +44,7 @@ function openingTagAt(content, tagName) {
     return parsed ? { ...parsed, text: tag[0], index: tag.index } : null;
 }
 
-/** Extract a name and remove only its metadata from the supplied content. */
+/** Extract a name while preserving tag-based content and removing legacy name metadata. */
 export function extractName(content, kind = 'character') {
     const tagName = TAG_NAMES[kind];
     const tag = openingTagAt(content, tagName);
@@ -52,13 +52,7 @@ export function extractName(content, kind = 'character') {
         const rawName = tag.attributes.get('name');
         const name = rawName === null || rawName === undefined ? '' : decodeEntities(rawName).trim();
         if (!name) return null;
-        let cleanedContent = `${content.slice(0, tag.index)}${content.slice(tag.index + tag.text.length)}`.trim();
-        // A timestamp attribute is meaningful update data even though the metadata tag is removed.
-        const timestamp = tag.attributes.get('timestamp');
-        if (kind === 'update' && timestamp !== null && timestamp !== undefined && decodeEntities(timestamp).trim()) {
-            cleanedContent = `Timestamp: ${decodeEntities(timestamp).trim()}${cleanedContent ? `\n${cleanedContent}` : ''}`;
-        }
-        return { name, content: cleanedContent };
+        return { name, content: content.trim() };
     }
 
     const linePatterns = [
@@ -116,9 +110,6 @@ export function parseBlock(block, kind, delimiters) {
     if (content.toLowerCase().startsWith(delimiters.start.toLowerCase()) && content.toLowerCase().endsWith(delimiters.end.toLowerCase())) {
         content = content.slice(delimiters.start.length, -delimiters.end.length).trim();
     }
-    const tagName = TAG_NAMES[kind];
-    const paired = new RegExp(`^\\s*(<\\s*${tagName}\\b(?:"[^"]*"|'[^']*'|[^'">])*>)\\s*([\\s\\S]*?)<\\/\\s*${tagName}\\s*>\\s*$`, 'i').exec(content);
-    if (paired) content = `${paired[1]}${paired[2]}`;
     const extracted = extractName(content.trim(), kind);
     if (!extracted) return null;
     if (kind === 'character') return { name: extracted.name, description: extracted.content || `Character named ${extracted.name}` };
