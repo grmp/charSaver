@@ -3,6 +3,8 @@
 
 const MODULE_NAME = 'CharacterSaver';
 
+import { detectBlockRanges, parseBlock, removeLegacyRanges } from './parser.js';
+
 // Default settings
 const defaultSettings = {
     // Character creation settings
@@ -143,7 +145,9 @@ async function renderSettings() {
                 <ul class="margin0">
                     <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>
                     <li><b>Character Updates:</b> Creates or appends to a "Update for [Name]" entry for character progression</li>
-                    <li>Delimiter blocks are removed from messages after processing</li>
+                    <li>Use legacy delimiters or complete <code>&lt;npc name="..."&gt;...&lt;/npc&gt;</code> and <code>&lt;npc_update name="..."&gt;...&lt;/npc_update&gt;</code> elements.</li>
+                    <li>Tags require a non-empty <code>name</code> attribute; other attributes are allowed in any order.</li>
+                    <li>Processed legacy delimiter blocks are removed. NPC tag elements remain byte-for-byte in both chat and lorebook content.</li>
                 </ul>
             </div>
         </div>
@@ -224,36 +228,18 @@ function escapeRegExp(string) {
  * Detects all character introduction blocks in a message
  */
 function detectCharacterBlocks(messageContent) {
-    const blocks = [];
-    const regex = new RegExp(
-        `${escapeRegExp(START_DELIMITER())}([\\s\\S]*?)${escapeRegExp(END_DELIMITER())}`,
-        'gi'
-    );
-
-    let match;
-    while ((match = regex.exec(messageContent)) !== null) {
-        blocks.push(match[0].trim());
-    }
-
-    return blocks;
+    return detectBlockRanges(messageContent, 'character', {
+        start: START_DELIMITER(), end: END_DELIMITER(),
+    }).map(block => block.text);
 }
 
 /**
  * Detects all character progression update blocks in a message
  */
 function detectUpdateBlocks(messageContent) {
-    const blocks = [];
-    const regex = new RegExp(
-        `${escapeRegExp(settings.updateStartDelimiter)}([\\s\\S]*?)${escapeRegExp(settings.updateEndDelimiter)}`,
-        'gi'
-    );
-
-    let match;
-    while ((match = regex.exec(messageContent)) !== null) {
-        blocks.push(match[0].trim());
-    }
-
-    return blocks;
+    return detectBlockRanges(messageContent, 'update', {
+        start: settings.updateStartDelimiter, end: settings.updateEndDelimiter,
+    }).map(block => block.text);
 }
 
 /**
@@ -261,53 +247,14 @@ function detectUpdateBlocks(messageContent) {
  */
 function parseCharacterBlock(block) {
     try {
-        let content = block
-            .replace(new RegExp(escapeRegExp(START_DELIMITER()), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(END_DELIMITER()), 'gi'), '')
-            .trim();
-
-        // Look for Name: field (with or without bold markdown, various whitespace)
-        // Or just a bolded name like **John Doe**
-        const namePatterns = [
-            /\*\*Name\*\*:\s*(.+)/im,           // **Name:** X
-            /\*\*Name\*\*:\s*(.+)/im,            // **Name**: X
-            /Name\s*:\s*(.+)/im,                 // Name: X
-            /^\*\*([^*]+)\*\*\s*$/m,             // **John Doe** (standalone, first line)
-            /\*\*([^*]+)\*\*\s*[\r\n]/,          // **John Doe** (followed by newline)
-        ];
-
-        let characterName = null;
-        let namePatternUsed = null;
-
-        for (const pattern of namePatterns) {
-            const match = content.match(pattern);
-            if (match) {
-                characterName = match[1].trim();
-                namePatternUsed = pattern;
-                console.log(`[${MODULE_NAME}] Found character name: '${characterName}'`);
-                break;
-            }
-        }
-
-        if (!characterName) {
+        const character = parseBlock(block, 'character', {
+            start: START_DELIMITER(), end: END_DELIMITER(),
+        });
+        if (!character) {
             console.warn(`[${MODULE_NAME}] Could not extract character name from block`);
-            console.debug(`[${MODULE_NAME}] Block content:`, content);
             return null;
         }
-
-        if (!characterName) {
-            console.warn(`[${MODULE_NAME}] Empty character name in block`);
-            return null;
-        }
-
-        // The entire block (excluding delimiters) is the description
-        // Remove the Name line from the description to avoid redundancy
-        const description = namePatternUsed ? content.replace(namePatternUsed, '').trim() : content.trim();
-
-        return {
-            name: characterName,
-            description: description || `Character named ${characterName}`,
-        };
+        return character;
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error parsing character block:`, error);
         return null;
@@ -343,40 +290,14 @@ function removeCharacterBlocks(messageContent) {
  */
 function parseUpdateBlock(block) {
     try {
-        let content = block
-            .replace(new RegExp(escapeRegExp(settings.updateStartDelimiter), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(settings.updateEndDelimiter), 'gi'), '')
-            .trim();
-
-        // Reuse the same namePatterns from parseCharacterBlock for consistency
-        const namePatterns = [
-            /\*\*Name\*\*:\s*(.+)/im,
-            /\*\*Name\*\*:\s*(.+)/im,
-            /Name\s*:\s*(.+)/im,
-            /^\*\*([^*]+)\*\*\s*$/m,
-            /\*\*([^*]+)\*\*\s*[\r\n]/,
-        ];
-
-        let characterName = null;
-
-        for (const pattern of namePatterns) {
-            const match = content.match(pattern);
-            if (match) {
-                characterName = match[1].trim();
-                break;
-            }
-        }
-
-        if (!characterName) {
+        const update = parseBlock(block, 'update', {
+            start: settings.updateStartDelimiter, end: settings.updateEndDelimiter,
+        });
+        if (!update) {
             console.warn(`[${MODULE_NAME}] Could not extract character name from update block`);
             return null;
         }
-
-        // All content is the update
-        return {
-            name: characterName,
-            content: content,
-        };
+        return update;
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error parsing update block:`, error);
         return null;
@@ -593,6 +514,14 @@ async function processMessage(messageId) {
             return;
         }
 
+        const characterBlocks = detectBlockRanges(messageContent, 'character', {
+            start: START_DELIMITER(), end: END_DELIMITER(),
+        });
+
+        if (characterBlocks.length === 0) {
+            return;
+        }
+
         const worldName = await getOrCreateWorldInfoName();
 
         if (!worldName) {
@@ -600,18 +529,13 @@ async function processMessage(messageId) {
             return;
         }
 
-        const characterBlocks = detectCharacterBlocks(messageContent);
-
-        if (characterBlocks.length === 0) {
-            return;
-        }
-
         console.log(`[${MODULE_NAME}] Found ${characterBlocks.length} character introduction(s)`);
 
         const createdCharacters = [];
+        const processedBlocks = [];
 
         for (const block of characterBlocks) {
-            const characterData = parseCharacterBlock(block);
+            const characterData = parseCharacterBlock(block.text);
 
             if (characterData) {
                 const success = await createLorebookEntry(
@@ -622,13 +546,14 @@ async function processMessage(messageId) {
 
                 if (success) {
                     createdCharacters.push(characterData.name);
+                    processedBlocks.push(block);
                 }
             }
         }
 
         if (createdCharacters.length > 0) {
             console.log(`[${MODULE_NAME}] Message BEFORE edit:\n${messageContent}`);
-            message.mes = removeCharacterBlocks(messageContent);
+            message.mes = removeLegacyRanges(messageContent, processedBlocks);
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
@@ -666,6 +591,14 @@ async function processUpdates(messageId) {
             return;
         }
 
+        const updateBlocks = detectBlockRanges(messageContent, 'update', {
+            start: settings.updateStartDelimiter, end: settings.updateEndDelimiter,
+        });
+
+        if (updateBlocks.length === 0) {
+            return;
+        }
+
         const worldName = await getOrCreateWorldInfoName();
 
         if (!worldName) {
@@ -673,18 +606,13 @@ async function processUpdates(messageId) {
             return;
         }
 
-        const updateBlocks = detectUpdateBlocks(messageContent);
-
-        if (updateBlocks.length === 0) {
-            return;
-        }
-
         console.log(`[${MODULE_NAME}] Found ${updateBlocks.length} character progression update(s)`);
 
         const updatedCharacters = [];
+        const processedBlocks = [];
 
         for (const block of updateBlocks) {
-            const updateData = parseUpdateBlock(block);
+            const updateData = parseUpdateBlock(block.text);
 
             if (updateData) {
                 const success = await createOrUpdateLorebookEntry(
@@ -695,14 +623,15 @@ async function processUpdates(messageId) {
 
                 if (success) {
                     updatedCharacters.push(updateData.name);
+                    processedBlocks.push(block);
                 }
             }
         }
 
         if (updatedCharacters.length > 0) {
-            // Remove update blocks from message (same behavior as character creation)
+            // Only legacy delimiters are removed; XML-style elements remain verbatim.
             console.log(`[${MODULE_NAME}] Message BEFORE edit:\n${messageContent}`);
-            message.mes = removeUpdateBlocks(messageContent);
+            message.mes = removeLegacyRanges(messageContent, processedBlocks);
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
