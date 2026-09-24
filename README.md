@@ -98,6 +98,8 @@ Tall, observant, and habitually carries a brass compass.
 capitalization, attribute order, extra attributes, and whitespace (including line
 breaks around attributes and `=`) are accepted. XML/HTML entities in names are
 decoded, so `name="John &amp; Jane"` is saved as `John & Jane`.
+The complete tag-containing content is stored verbatim in the lorebook; only the
+configured legacy delimiters surrounding it are omitted.
 
 ## Character Update Format
 
@@ -113,8 +115,8 @@ Name: Verena Cortez
 
 If an "Update for [Name]" entry already exists, new content will be appended to it.
 
-Updates may alternatively use a tag. A `timestamp` attribute is retained in the
-stored update even though the opening metadata tag itself is removed:
+Updates may alternatively use a tag. The complete tag is retained in the stored
+update, including attributes such as `timestamp`:
 
 ```xml
 <npc_update timestamp="2024-07-07T08:39" name="John Doe">
@@ -136,7 +138,11 @@ Tags may appear inside the configured legacy delimiters or as standalone blocks.
 A standalone non-self-closing tag **must have its matching closing tag**; malformed
 or unclosed tags are left untouched. Self-closing forms such as
 `<npc name="John Doe" />` and `<npc_update name='John Doe' />` are supported as
-metadata-only blocks. Missing or empty `name` attributes are not processed.
+self-contained blocks. Missing or empty `name` attributes are not processed.
+Although the `name` attribute is decoded to identify the lorebook entry, paired
+tags, opening tags inside legacy delimiter blocks, and self-closing tags are all
+retained in the entry content. Legacy Name/bold syntax continues to be removed
+from the stored content after name extraction.
 
 ## How It Works
 
