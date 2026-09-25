@@ -146,9 +146,12 @@ their original order as comma-separated `attribute=value` pairs, without quotes.
 For example, `<npc name="Test" color="#fffff" sex="male">` adds:
 
 ```text
+Known NPC=
 name=Test, color=#fffff, sex=male
 ```
 
+The entry always begins with `Known NPC=` on its own line. The prefix is added
+to existing entries when the next character is appended, without duplicating it.
 Each character occupies a new line; existing content is preserved. Introductions
 using the older text formats add `name=Character Name`. Character updates do not
 append to this entry.

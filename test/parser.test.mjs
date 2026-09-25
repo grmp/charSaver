@@ -116,7 +116,7 @@ test('processing preserves XML for new entries and appended updates and removes 
     assert.equal(world.entries[0].content, npc);
     assert.equal(world.entries[1].comment, 'All NPC');
     assert.equal(world.entries[1].order, 98);
-    assert.equal(world.entries[1].content, 'role=captain, name=Alice\nname=Bob');
+    assert.equal(world.entries[1].content, 'Known NPC=\nrole=captain, name=Alice\nname=Bob');
     assert.equal(world.entries[2].content, second);
     assert.equal(world.entries[3].comment, 'Update for Alice');
     assert.equal(world.entries[3].content, update);
@@ -125,7 +125,7 @@ test('processing preserves XML for new entries and appended updates and removes 
     context.chat.push({ mes: wrap(next, true) });
     await api.processUpdates(1);
     assert.equal(world.entries[3].content, `${update}\n${next}`);
-    assert.equal(world.entries[1].content, 'role=captain, name=Alice\nname=Bob');
+    assert.equal(world.entries[1].content, 'Known NPC=\nrole=captain, name=Alice\nname=Bob');
     assert.equal(Object.keys(world.entries).length, 4);
     assert.equal(context.chat[1].mes, '');
     assert.equal(calls.save, 4);
@@ -140,7 +140,7 @@ test('All NPC appends every opening-tag attribute and preserves existing entry s
     context.chat.push({ mes: wrap(`<NPC\n role='captain' NAME = "Other" empty="" note="rank > 2; name='Wrong'" data-id="42"/>`) });
     await Promise.all([api.processMessage(0), api.processMessage(1)]);
     assert.equal(world.entries[0].content,
-        "name=Existing\nname=Test, color=#fffff, sex=male\nrole=captain, NAME=Other, empty=, note=rank > 2; name='Wrong', data-id=42");
+        "Known NPC=\nname=Existing\nname=Test, color=#fffff, sex=male\nrole=captain, NAME=Other, empty=, note=rank > 2; name='Wrong', data-id=42");
     assert.equal(world.entries[0].constant, true);
     assert.deepEqual(world.entries[0].key, ['custom']);
     assert.equal(Object.values(world.entries).filter(entry => entry.comment === 'All NPC').length, 1);
@@ -151,7 +151,7 @@ test('legacy introductions append their name to All NPC', async () => {
     const { api, context, world } = setup();
     context.chat.push({ mes: wrap('Name: Alice\nDescription.') });
     await api.processMessage(0);
-    assert.equal(world.entries[1].content, 'name=Alice');
+    assert.equal(world.entries[1].content, 'Known NPC=\nname=Alice');
 });
 
 test('failed character save preserves message and registry for retry', async () => {
@@ -165,7 +165,7 @@ test('failed character save preserves message and registry for retry', async () 
     assert.equal(Object.keys(world.entries).length, 0);
     context.saveWorldInfo = save;
     await api.processMessage(0);
-    assert.equal(world.entries[1].content, 'name=Test, color=#fffff, sex=male');
+    assert.equal(world.entries[1].content, 'Known NPC=\nname=Test, color=#fffff, sex=male');
     assert.equal(context.chat[0].mes, '');
 });
 

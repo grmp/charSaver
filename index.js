@@ -604,6 +604,9 @@ async function createLorebookEntry(worldName, characterName, description) {
             const npc = extractNpcName(description);
             const attributes = npc?.attributes.length ? npc.attributes : [['name', characterName]];
             const line = attributes.map(([key, value]) => `${key}=${value}`).join(', ');
+            if (!allNpcEntry.content?.startsWith('Known NPC=')) {
+                allNpcEntry.content = allNpcEntry.content ? `Known NPC=\n${allNpcEntry.content}` : 'Known NPC=';
+            }
             allNpcEntry.content = allNpcEntry.content ? `${allNpcEntry.content}\n${line}` : line;
 
             console.log(`[${MODULE_NAME}] Saving World Info with`, Object.keys(worldData.entries || {}).length, 'entries');
