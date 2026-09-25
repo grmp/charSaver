@@ -5,6 +5,7 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
 ## Features
 
 - **Character Creation**: Automatically detects character introductions in AI responses and creates chat-bound lorebook entries
+- **All NPC**: Appends each new character's XML attributes to a shared "All NPC" lorebook entry, one character per line
 - **Character Updates**: Detects character progression/updates and either appends to "Update for [Name]" or creates separate numbered entries
 - Removes character introduction and update blocks from the chat after processing
 - Supports multiple character introductions/updates in a single message
@@ -138,6 +139,23 @@ formats are tried.
 The complete content inside the delimiters is retained for XML blocks, including
 opening and closing tags, attributes, and internal formatting. Only the surrounding
 delimiters and outer whitespace are removed. Existing updates are appended as before.
+
+Each new character is also appended to the chat lorebook entry **All NPC**, which
+is created automatically if missing. New entries use Constant activation with
+Vectorized disabled and order 98. All opening-tag attributes are included in their
+original order as comma-separated `attribute=value` pairs, without quotes.
+For example, `<npc name="Test" color="#fffff" sex="male">` adds:
+
+```text
+Known NPC=
+name=Test, color=#fffff, sex=male
+```
+
+The entry always begins with `Known NPC=` on its own line. The prefix is added
+to existing entries when the next character is appended, without duplicating it.
+Each character occupies a new line; existing content is preserved. Introductions
+using the older text formats add `name=Character Name`. Character updates do not
+append to this entry.
 
 ## Supported Name Formats
 
