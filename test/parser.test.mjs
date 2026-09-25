@@ -147,12 +147,16 @@ test('All NPC appends every opening-tag attribute and preserves existing entry s
     assert.equal(calls.save, 2);
 });
 
-test('legacy introductions append their name to All NPC', async () => {
-    const { api, context, world } = setup();
-    context.chat.push({ mes: wrap('Name: Alice\nDescription.') });
-    await api.processMessage(0);
-    assert.equal(world.entries[1].content, 'Known NPC=\nname=Alice');
-});
+for (const heading of ['Name: Alice', '**Name:** Alice', '**Name**: Alice', '**Alice**']) {
+    test(`legacy introduction ${heading} appends only its name to All NPC`, async () => {
+        const { api, context, world } = setup();
+        const description = 'Description.\nColor: #fffff\nSex: female';
+        context.chat.push({ mes: wrap(`${heading}\n${description}`) });
+        await api.processMessage(0);
+        assert.equal(world.entries[1].content, 'Known NPC=\nname=Alice');
+        assert.equal(world.entries[0].content, description);
+    });
+}
 
 test('failed character save preserves message and registry for retry', async () => {
     const { api, context, world } = setup();
