@@ -356,3 +356,66 @@ test('custom non-comment delimiters preserve trailing comment openers and inner 
     const content = '<npc_update name="Solene">Literal [update] text.</npc_update>\n<!--';
     assert.equal(env.api.parseUpdateBlock(`[update]${content}[/update]`).content, content);
 });
+
+for (const separateUpdateEntries of [false, true]) {
+    test(`multiple NPC updates in one wrapper, separate=${separateUpdateEntries}`, async () => {
+        const env = setup({ separateUpdateEntries });
+        const names = ['Stella', 'Tamsin', 'Seraphine', 'Pip', 'Solene', 'Liora', 'Liris'];
+        const parts = names.map((name, i) => `<npc_update name="${name}" timestamp="2024-07-08T12:29">\n- Status= Assigned task ${i}.\n  </npc_update>`);
+        env.context.chat.push({ mes: `Before\n${wrap(parts.join('\n  '), true)}\nAfter` });
+        await env.api.processUpdates(0);
+        const entries = Object.values(env.world.entries);
+        assert.equal(entries.length, 7);
+        assert.deepEqual(entries.map(e => e.key[0]), names);
+        assert.deepEqual(entries.map(e => e.content), parts);
+        assert.deepEqual(entries.map(e => e.comment), names.map(name => separateUpdateEntries ? `Update #1 for ${name}` : `Update for ${name}`));
+        assert.equal(env.context.chat[0].mes, 'BeforeAfter');
+    });
+}
+
+test('siblings support custom delimiters, mixed tag case, quoted angles and repeated names', async () => {
+    const env = setup({ separateUpdateEntries: true, updateStartDelimiter: '[updates]', updateEndDelimiter: '[/updates]' });
+    const parts = ['<NPC_UPDATE note="rank > 2" name="Alice"><detail>First</detail></NPC_UPDATE>',
+        "<npc name='Alice'>Second <!-- <npc_update name=\"Ignored\"> --> </npc>"];
+    env.context.chat.push({ mes: `[updates]${parts.join('\n')}[/updates]` });
+    await env.api.processUpdates(0);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.content), parts);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update #1 for Alice', 'Update #2 for Alice']);
+});
+
+test('partial failure keeps only unsaved siblings for retry and preserves other failed blocks', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const save = env.context.saveWorldInfo;
+    env.context.saveWorldInfo = async (name, data) => {
+        if (Object.values(data.entries).some(e => e.key[0] === 'Bob')) throw new Error('save failed');
+        await save(name, data);
+    };
+    const alice = '<npc_update name="Alice">First.</npc_update>';
+    const bob = '<npc_update name="Bob">Second.</npc_update>';
+    const invalid = wrap('No identifiable character.', true);
+    env.context.chat.push({ mes: `${wrap(alice + '\n' + bob, true)}\n${invalid}` });
+    await env.api.processUpdates(0);
+    assert.equal(Object.keys(env.world.entries).length, 1);
+    assert.ok(!env.context.chat[0].mes.includes(alice));
+    assert.ok(env.context.chat[0].mes.includes(bob));
+    assert.ok(env.context.chat[0].mes.includes(invalid));
+    env.context.saveWorldInfo = save;
+    await env.api.processUpdates(0);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update #1 for Alice', 'Update #1 for Bob']);
+    assert.equal(env.context.chat[0].mes, invalid);
+});
+
+for (const content of [
+    '<npc_update name="Alice">One.</npc_update><npc_update name="Bob">Unclosed',
+    '<npc_update name="Alice">One.<npc_update name="Bob">Nested.</npc_update></npc_update>',
+    '<npc_update name="Alice">One.</npc_update>Unassigned text<npc_update name="Bob">Two.</npc_update>',
+]) {
+    test(`ambiguous sibling group remains unchanged: ${content}`, async () => {
+        const env = setup();
+        const original = wrap(content, true);
+        env.context.chat.push({ mes: original });
+        await env.api.processUpdates(0);
+        assert.equal(env.calls.save, 0);
+        assert.equal(env.context.chat[0].mes, original);
+    });
+}

@@ -109,6 +109,8 @@ Switching modes affects future updates only: existing entries are not renamed, s
 
 ## NPC XML Tags
 
+An update delimiter block may contain several complete sibling `<npc_update>` (or `<npc>`) elements. Each element is saved for its own character, using the selected append or numbered-entry mode. Keep only whitespace between sibling elements. Ambiguous or malformed groups remain in the message; if an individual save fails, only the unsaved elements remain for retry. Standalone tags still require the configured outer delimiters.
+
 Names may also be supplied through the `name` attribute of an `npc` or
 `npc_update` tag. The existing comment delimiters are still required and determine
 whether to create a character entry or an update. Tags outside those delimiters
