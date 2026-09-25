@@ -576,7 +576,7 @@ async function createLorebookEntry(worldName, characterName, description) {
             newEntry.keysecondary = [];
             newEntry.content = description;
             newEntry.comment = `Character: ${characterName}`;
-            newEntry.order = 100;
+            newEntry.order = 99;
             newEntry.constant = false;
             newEntry.selective = false;
             newEntry.depth = 4;
