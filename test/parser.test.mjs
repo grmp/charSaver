@@ -116,6 +116,8 @@ test('processing preserves XML for new entries and appended updates and removes 
     assert.equal(world.entries[0].content, npc);
     assert.equal(world.entries[1].comment, 'All NPC');
     assert.equal(world.entries[1].order, 98);
+    assert.equal(world.entries[1].constant, true);
+    assert.equal(world.entries[1].vectorized, false);
     assert.equal(world.entries[1].content, 'Known NPC=\nrole=captain, name=Alice\nname=Bob');
     assert.equal(world.entries[2].content, second);
     assert.equal(world.entries[3].comment, 'Update for Alice');

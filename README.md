@@ -141,8 +141,9 @@ opening and closing tags, attributes, and internal formatting. Only the surround
 delimiters and outer whitespace are removed. Existing updates are appended as before.
 
 Each new character is also appended to the chat lorebook entry **All NPC**, which
-is created automatically if missing. All opening-tag attributes are included in
-their original order as comma-separated `attribute=value` pairs, without quotes.
+is created automatically if missing. New entries use Constant activation with
+Vectorized disabled and order 98. All opening-tag attributes are included in their
+original order as comma-separated `attribute=value` pairs, without quotes.
 For example, `<npc name="Test" color="#fffff" sex="male">` adds:
 
 ```text

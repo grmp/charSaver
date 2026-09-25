@@ -594,12 +594,12 @@ async function createLorebookEntry(worldName, characterName, description) {
                 allNpcEntry.keysecondary = [];
                 allNpcEntry.content = '';
                 allNpcEntry.order = 98;
-                allNpcEntry.constant = false;
+                allNpcEntry.constant = true;
                 allNpcEntry.selective = false;
                 allNpcEntry.depth = 4;
                 allNpcEntry.probability = 100;
                 allNpcEntry.position = 0;
-                allNpcEntry.vectorized = true;
+                allNpcEntry.vectorized = false;
             }
             const npc = extractNpcName(description);
             const attributes = npc?.attributes.length ? npc.attributes : [['name', characterName]];
