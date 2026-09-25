@@ -291,7 +291,7 @@ function detectUpdateBlocks(messageContent) {
 }
 
 /**
- * Reads NPC name attributes without parsing or rewriting the stored XML.
+ * Reads NPC attributes without parsing or rewriting the stored XML.
  * A non-null result also marks tag content that must survive legacy fallback.
  */
 function extractNpcName(content) {
@@ -299,15 +299,17 @@ function extractNpcName(content) {
     let result = null;
 
     for (const tag of content.matchAll(tags)) {
-        result = { name: null };
+        result = { name: null, attributes: [] };
         // Consume complete attributes so a quoted value containing `name=`
         // cannot be mistaken for the actual name attribute.
         const attributes = /\s+([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
         for (const attribute of tag[1].matchAll(attributes)) {
+            result.attributes.push([attribute[1], attribute[2] ?? attribute[3] ?? attribute[4]]);
             if (attribute[1].toLowerCase() !== 'name') continue;
             const name = (attribute[2] ?? attribute[3] ?? '').trim();
-            if (name) return { name };
+            if (name && !result.name) result.name = name;
         }
+        if (result.name) return result;
     }
 
     return result;
@@ -576,13 +578,33 @@ async function createLorebookEntry(worldName, characterName, description) {
             newEntry.keysecondary = [];
             newEntry.content = description;
             newEntry.comment = `Character: ${characterName}`;
-            newEntry.order = 100;
+            newEntry.order = 99;
             newEntry.constant = false;
             newEntry.selective = false;
             newEntry.depth = 4;
             newEntry.probability = 100;
             newEntry.position = 0;
             newEntry.vectorized = true;
+
+            let allNpcEntry = Object.values(worldData.entries || {}).find(entry => entry.comment === 'All NPC');
+            if (!allNpcEntry) {
+                allNpcEntry = createWorldInfoEntry(worldName, worldData);
+                allNpcEntry.comment = 'All NPC';
+                allNpcEntry.key = ['All NPC'];
+                allNpcEntry.keysecondary = [];
+                allNpcEntry.content = '';
+                allNpcEntry.order = 98;
+                allNpcEntry.constant = false;
+                allNpcEntry.selective = false;
+                allNpcEntry.depth = 4;
+                allNpcEntry.probability = 100;
+                allNpcEntry.position = 0;
+                allNpcEntry.vectorized = true;
+            }
+            const npc = extractNpcName(description);
+            const attributes = npc?.attributes.length ? npc.attributes : [['name', characterName]];
+            const line = attributes.map(([key, value]) => `${key}=${value}`).join(', ');
+            allNpcEntry.content = allNpcEntry.content ? `${allNpcEntry.content}\n${line}` : line;
 
             console.log(`[${MODULE_NAME}] Saving World Info with`, Object.keys(worldData.entries || {}).length, 'entries');
 
