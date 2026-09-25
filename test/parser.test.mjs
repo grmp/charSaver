@@ -319,3 +319,40 @@ for (const failure of ['load missing', 'load throws', 'save throws']) {
         assert.equal(env.world.entries[0].comment, 'Update #1 for Alice');
     });
 }
+
+for (const update of [false, true]) {
+    for (const opener of ['', '<!-- ', '<!--\n  ']) {
+        test(`closing marker: update=${update}, opener=${JSON.stringify(opener)}`, async () => {
+            const env = setup({ separateUpdateEntries: true });
+            const kind = update ? 'update' : 'new';
+            const tag = update ? 'npc_update' : 'npc';
+            const content = `<${tag} name="Solene" timestamp="2024-07-08T12:19">\n<!-- Keep this comment. -->\n- Status update= Bound to Nick's voice-anchor.\n</${tag}>`;
+            const block = `<!-- ${kind} character start\n${content}\n${opener}${kind} character end -->`;
+            const parse = update ? env.api.parseUpdateBlock : env.api.parseCharacterBlock;
+            const parsed = parse(block);
+            assert.equal(update ? parsed.content : parsed.description, content);
+            env.context.chat.push({ mes: `Before\n${block}\nAfter` });
+            await (update ? env.api.processUpdates(0) : env.api.processMessage(0));
+            const entry = Object.values(env.world.entries).find(e => e.key?.[0] === 'Solene');
+            assert.equal(entry.content, content);
+            assert.equal(env.context.chat[0].mes, 'BeforeAfter');
+        });
+    }
+}
+
+test('closing comment cleanup supports append mode and explicit comment delimiters', async () => {
+    const env = setup({ updateEndDelimiter: '<!-- update character end -->' });
+    const content = '<npc_update name="Solene">Update.</npc_update>';
+    const block = `<!-- update character start\n${content}\n<!-- update character end -->`;
+    for (let i = 0; i < 2; i++) {
+        env.context.chat.push({ mes: block });
+        await env.api.processUpdates(i);
+    }
+    assert.equal(env.world.entries[0].content, `${content}\n${content}`);
+});
+
+test('custom non-comment delimiters preserve trailing comment openers and inner delimiter text', () => {
+    const env = setup({ updateStartDelimiter: '[update]', updateEndDelimiter: '[/update]' });
+    const content = '<npc_update name="Solene">Literal [update] text.</npc_update>\n<!--';
+    assert.equal(env.api.parseUpdateBlock(`[update]${content}[/update]`).content, content);
+});

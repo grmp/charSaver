@@ -316,14 +316,25 @@ function extractNpcName(content) {
 }
 
 /**
+ * Removes boundary markers while preserving the content inside the block.
+ */
+function stripBlockDelimiters(block, startDelimiter, endDelimiter) {
+    // Some responses wrap the closing marker in its own HTML comment.
+    // Consume that opener only at the boundary of a comment-style delimiter.
+    const optionalOpener = endDelimiter.trimEnd().endsWith('-->')
+        && !endDelimiter.trimStart().startsWith('<!--') ? '(?:<!--\\s*)?' : '';
+    return block.trim()
+        .replace(new RegExp(`^${escapeRegExp(startDelimiter)}`, 'i'), '')
+        .replace(new RegExp(`${optionalOpener}${escapeRegExp(endDelimiter)}$`, 'i'), '')
+        .trim();
+}
+
+/**
  * Parses a character block to extract name and description
  */
 function parseCharacterBlock(block) {
     try {
-        let content = block
-            .replace(new RegExp(escapeRegExp(START_DELIMITER()), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(END_DELIMITER()), 'gi'), '')
-            .trim();
+        const content = stripBlockDelimiters(block, START_DELIMITER(), END_DELIMITER());
 
         const npc = extractNpcName(content);
         if (npc?.name) {
@@ -407,10 +418,7 @@ function removeCharacterBlocks(messageContent) {
  */
 function parseUpdateBlock(block) {
     try {
-        let content = block
-            .replace(new RegExp(escapeRegExp(settings.updateStartDelimiter), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(settings.updateEndDelimiter), 'gi'), '')
-            .trim();
+        const content = stripBlockDelimiters(block, settings.updateStartDelimiter, settings.updateEndDelimiter);
 
         const npc = extractNpcName(content);
         if (npc?.name) {
