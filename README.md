@@ -5,7 +5,7 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
 ## Features
 
 - **Character Creation**: Automatically detects character introductions in AI responses and creates chat-bound lorebook entries
-- **Character Updates**: Detects character progression/updates and appends to existing "Update for [Name]" entries
+- **Character Updates**: Detects character progression/updates and either appends to "Update for [Name]" or creates separate numbered entries
 - Removes character introduction and update blocks from the chat after processing
 - Supports multiple character introductions/updates in a single message
 - Supports flexible character name formats:
@@ -98,7 +98,13 @@ Name: Verena Cortez
 -->
 ```
 
-If an "Update for [Name]" entry already exists, new content will be appended to it.
+By default, new content is appended to an existing "Update for [Name]" entry, or that entry is created if missing.
+
+Enable **Save each update as a separate entry** under **Extensions → Character Saver → Character Updates** to create "Update #1 for [Name]", "Update #2 for [Name]", etc. Each update block becomes its own entry. Numbers increase independently for each exact character name in each lorebook.
+
+The last number is saved in the extension settings, so deleting entries does not reuse their numbers. Existing numbered entries are also checked when choosing the next number. Keep these settings when moving installations to preserve deleted entries' number history; lorebook renames are treated as a new counter scope.
+
+Switching modes affects future updates only: existing entries are not renamed, split, or merged. Switching back to separate entries resumes numbering. This setting applies globally across chats.
 
 ## NPC XML Tags
 
@@ -158,7 +164,7 @@ Regression tests can be run with `node --test test/*.test.mjs`.
 1. When the AI generates a message with character progression/updates
 2. The extension detects the `<!-- update character start` ... `update character end -->` delimiters
 3. Extracts the character name and update content
-4. Creates or appends to a lorebook entry with the comment "Update for [Name]"
+4. Appends to "Update for [Name]" or creates "Update #Number for [Name]", depending on the selected mode
 5. Removes the update block from the displayed message
 
 ## Settings
@@ -168,6 +174,7 @@ The extension settings can be found in **Extensions → Character Saver**:
 - **Character Creation Start Delimiter**: Marks the beginning of a character introduction (default: `<!-- new character start`)
 - **Character Creation End Delimiter**: Marks the end of a character introduction (default: `new character end -->`)
 - **Character Update Start Delimiter**: Marks the beginning of a character update (default: `<!-- update character start`)
+- **Save each update as a separate entry**: Creates numbered entries instead of appending (default: off)
 - **Character Update End Delimiter**: Marks the end of a character update (default: `update character end -->`)
 
 ## Troubleshooting

@@ -7,28 +7,38 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
     .replace(/^import\s*\{[\s\S]*?\}\s*from\s*'[^']+';\s*/gm, '');
 
-function setup(customSettings = {}) {
+function setup(customSettings = {}, initialWorlds = {}) {
     const world = { entries: {} };
-    const calls = { save: 0, chat: 0 };
+    const worlds = { Test: world, ...initialWorlds };
+    const calls = { save: 0, chat: 0, settings: 0 };
+    const elements = new Map();
+    const element = id => {
+        if (!elements.has(id)) elements.set(id, { value: '', checked: false, listeners: {},
+            addEventListener(type, handler) { this.listeners[type] = handler; } });
+        return elements.get(id);
+    };
     const context = vm.createContext({
+        structuredClone,
+        document: { querySelector: element, getElementById: element },
+        saveSettingsDebounced() { calls.settings++; },
         console: { log() {}, warn() {}, debug() {}, error() {} },
         extension_settings: { characterSaver: customSettings },
         eventSource: { on() {} },
         event_types: { APP_READY: 'ready', CHAT_CHANGED: 'chat', MESSAGE_RECEIVED: 'message' },
         chat: [], chat_metadata: { world: 'Test' }, METADATA_KEY: 'world',
         world_names: ['Test'],
-        loadWorldInfo: async () => world,
-        createWorldInfoEntry: () => {
-            const uid = Object.keys(world.entries).length;
-            return world.entries[uid] = { uid };
+        loadWorldInfo: async name => worlds[name] || (worlds[name] = { entries: {} }),
+        createWorldInfoEntry: (name, data) => {
+            const uid = Math.max(-1, ...Object.keys(data.entries).map(Number)) + 1;
+            return data.entries[uid] = { uid };
         },
-        saveWorldInfo: async () => { calls.save++; },
+        saveWorldInfo: async (name, data) => { calls.save++; worlds[name].entries = structuredClone(data.entries); },
         updateMessageBlock() {},
         saveChatConditional: async () => { calls.chat++; },
         updateWorldInfoList() {},
     });
     vm.runInContext(source, context);
-    return { api: context.CharacterSaver, context, world, calls };
+    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element };
 }
 
 function wrap(content, update = false) {
@@ -149,3 +159,116 @@ test('custom delimiters still control detection and processing', async () => {
     assert.equal(world.entries[1].content, update);
     assert.equal(context.chat[0].mes, '');
 });
+
+async function toggleSeparate(env, checked) {
+    await vm.runInContext('renderSettings()', env.context);
+    const checkbox = env.element('char_saver_separate_update_entries');
+    checkbox.checked = checked;
+    checkbox.listeners.change();
+}
+
+test('settings checkbox defaults off, persists immediately, and restores on render and reload', async () => {
+    const env = setup();
+    await vm.runInContext('renderSettings()', env.context);
+    assert.equal(env.element('char_saver_separate_update_entries').checked, false);
+    await toggleSeparate(env, true);
+    assert.equal(env.calls.settings, 1);
+    assert.equal(env.context.extension_settings.characterSaver.separateUpdateEntries, true);
+    const reloaded = setup(structuredClone(env.context.extension_settings.characterSaver));
+    await vm.runInContext('renderSettings()', reloaded.context);
+    assert.equal(reloaded.element('char_saver_separate_update_entries').checked, true);
+});
+
+test('separate mode creates one entry per block with independent character counters', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const updates = ['Name: Alice\nFirst.', 'Name: Alice\nSecond.', 'Name: Bob\nFirst.'];
+    env.context.chat.push({ mes: updates.map(text => wrap(text, true)).join('\n') });
+    await env.api.processUpdates(0);
+    const entries = Object.values(env.world.entries);
+    assert.deepEqual(entries.map(entry => entry.comment), ['Update #1 for Alice', 'Update #2 for Alice', 'Update #1 for Bob']);
+    assert.deepEqual(entries.map(entry => entry.content), updates);
+    for (const entry of entries) {
+        assert.equal(entry.constant, false);
+        assert.equal(entry.vectorized, true);
+        assert.equal(entry.order, 100);
+        assert.equal(entry.depth, 4);
+        assert.equal(entry.probability, 100);
+        assert.equal(entry.position, 0);
+        assert.equal(entry.selective, false);
+        assert.equal(entry.keysecondary.length, 0);
+    }
+    assert.equal(entries[0].key[0], 'Alice');
+    assert.equal(env.context.chat[0].mes, '');
+    assert.equal(env.calls.save, 3);
+});
+
+test('concurrent writes use fresh lorebook data and separate lorebook counters', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    env.context.chat.push({ mes: wrap('Name: Carol\nDescription.') });
+    await Promise.all([
+        env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'One'),
+        env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Two'),
+        env.api.createOrUpdateLorebookEntry('Other', 'Alice', 'Other'),
+        env.api.processMessage(0),
+    ]);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment),
+        ['Update #1 for Alice', 'Update #2 for Alice', 'Character: Carol']);
+    assert.equal(env.worlds.Other.entries[0].comment, 'Update #1 for Alice');
+});
+
+test('mode changes preserve entries and resume counters after deletion and restart', async () => {
+    const env = setup();
+    await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Legacy');
+    await toggleSeparate(env, true);
+    await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'One');
+    await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Two');
+    delete env.world.entries[2];
+    const restarted = setup(structuredClone(env.context.extension_settings.characterSaver), structuredClone(env.worlds));
+    await toggleSeparate(restarted, false);
+    await restarted.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Appended');
+    assert.equal(restarted.world.entries[0].content, 'Legacy\nAppended');
+    assert.equal(restarted.world.entries[1].content, 'One');
+    await toggleSeparate(restarted, true);
+    await restarted.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Three');
+    assert.equal(restarted.world.entries[2].comment, 'Update #3 for Alice');
+    assert.equal(restarted.world.entries[2].content, 'Three');
+});
+
+test('number selection uses exact names and maximum saved or existing number', async () => {
+    const name = 'A.* [test]';
+    const env = setup({ separateUpdateEntries: true, updateEntryCounters: [
+        { worldName: 'Test', characterName: name, lastNumber: 5 },
+    ] });
+    for (const [i, comment] of ['Update #8 for A.* [test]', 'Update #99 for A.* [test] extra',
+        'Update #80 for a.* [test]', 'Update for A.* [test]', 'Update #invalid for A.* [test]'].entries()) {
+        env.world.entries[i] = { uid: i, comment };
+    }
+    await env.api.createOrUpdateLorebookEntry('Test', name, 'Nine');
+    assert.equal(env.world.entries[5].comment, 'Update #9 for A.* [test]');
+    env.world.entries = {};
+    await env.api.createOrUpdateLorebookEntry('Test', name, 'Ten');
+    assert.equal(env.world.entries[0].comment, 'Update #10 for A.* [test]');
+});
+
+for (const failure of ['load missing', 'load throws', 'save throws']) {
+    test(`${failure}: reports failure without advancing counters or changing persisted entries`, async () => {
+        const env = setup({ separateUpdateEntries: true });
+        const load = env.context.loadWorldInfo;
+        const save = env.context.saveWorldInfo;
+        if (failure === 'load missing') env.context.loadWorldInfo = async () => null;
+        if (failure === 'load throws') env.context.loadWorldInfo = async () => { throw new Error('load'); };
+        if (failure === 'save throws') env.context.saveWorldInfo = async () => { throw new Error('save'); };
+        assert.equal(await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Failed'), false);
+        assert.equal(env.calls.settings, 0);
+        assert.equal(Object.keys(env.world.entries).length, 0);
+        env.context.chat.push({ mes: wrap('Name: Alice\nFailed', true) });
+        const original = env.context.chat[0].mes;
+        await env.api.processUpdates(0);
+        assert.equal(env.context.chat[0].mes, original);
+        assert.equal(env.calls.chat, 0);
+        env.context.loadWorldInfo = load;
+        env.context.saveWorldInfo = save;
+        assert.equal(await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Retry'), true);
+        assert.equal(env.world.entries[0].comment, 'Update #1 for Alice');
+    });
+}

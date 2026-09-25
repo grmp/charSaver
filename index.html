@@ -6,29 +6,54 @@
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
-                <label data-i18n="ext_char_saver_start_delimiter" for="char_saver_start_delimiter">Start Delimiter</label>
-                <input id="char_saver_start_delimiter" class="text_pole" type="text" placeholder="<!-- new character start">
-                <small>Text that marks the beginning of a character introduction block</small>
+                <label>Character Creation</label>
+                <div class="marginBot5">
+                    <label for="char_saver_start_delimiter">Start Delimiter</label>
+                    <input id="char_saver_start_delimiter" class="text_pole" type="text" placeholder="<!-- new character start">
+                    <small>Text that marks the beginning of a character introduction block</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_end_delimiter">End Delimiter</label>
+                    <input id="char_saver_end_delimiter" class="text_pole" type="text" placeholder="new character end -->">
+                    <small>Text that marks the end of a character introduction block</small>
+                </div>
             </div>
-            <div class="marginBot5">
-                <label data-i18n="ext_char_saver_end_delimiter" for="char_saver_end_delimiter">End Delimiter</label>
-                <input id="char_saver_end_delimiter" class="text_pole" type="text" placeholder="--&gt;">
-                <small>Text that marks the end of a character introduction block</small>
-            </div>
+
             <hr class="sysHR">
+
             <div class="marginBot5">
-                <label data-i18n="ext_char_saver_info">Info</label>
+                <label>Character Updates</label>
+                <div class="marginBot5">
+                    <label class="checkbox_label" for="char_saver_separate_update_entries">
+                        <input id="char_saver_separate_update_entries" type="checkbox">
+                        <span>Save each update as a separate entry</span>
+                    </label>
+                    <small>Off: append to "Update for [Name]". On: create "Update #1 for [Name]", "Update #2 for [Name]", etc. Numbers increase per character and lorebook, even after deleting entries.</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_update_start_delimiter">Start Delimiter</label>
+                    <input id="char_saver_update_start_delimiter" class="text_pole" type="text" placeholder="<!-- update character start">
+                    <small>Text that marks the beginning of a character progression block</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_update_end_delimiter">End Delimiter</label>
+                    <input id="char_saver_update_end_delimiter" class="text_pole" type="text" placeholder="update character end -->">
+                    <small>Text that marks the end of a character progression block</small>
+                </div>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
+                <label>Info</label>
                 <p class="margin0">
-                    When the AI generates text between these delimiters, Character Saver will:
+                    Character Saver automatically creates chat lorebook entries for characters introduced by the AI:
                 </p>
                 <ul class="margin0">
-                    <li>Extract the character name and description</li>
-                    <li>Create a lorebook entry in the current chat's World Info</li>
-                    <li>Remove the delimiter block from the message</li>
+                    <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>
+                    <li><b>Character Updates:</b> Appends to "Update for [Name]" or creates separate numbered entries, depending on the setting above</li>
+                    <li>Delimiter blocks are removed from messages after processing</li>
                 </ul>
-                <p class="margin0">
-                    <small>Example: <code>&lt;!-- new character start **Name:** John Doe A brave knight... --&gt;</code></small>
-                </p>
             </div>
         </div>
     </div>
