@@ -232,7 +232,7 @@ test('separate mode creates one entry per block with independent character count
     env.context.chat.push({ mes: updates.map(text => wrap(text, true)).join('\n') });
     await env.api.processUpdates(0);
     const entries = Object.values(env.world.entries);
-    assert.deepEqual(entries.map(entry => entry.comment), ['Update #1 for Alice', 'Update #2 for Alice', 'Update #1 for Bob']);
+    assert.deepEqual(entries.map(entry => entry.comment), ['Update Alice #1', 'Update Alice #2', 'Update Bob #1']);
     assert.deepEqual(entries.map(entry => entry.content), updates);
     for (const entry of entries) {
         assert.equal(entry.constant, false);
@@ -259,8 +259,8 @@ test('concurrent writes use fresh lorebook data and separate lorebook counters',
         env.api.processMessage(0),
     ]);
     assert.deepEqual(Object.values(env.world.entries).map(e => e.comment),
-        ['Update #1 for Alice', 'Update #2 for Alice', 'Character: Carol', 'All NPC']);
-    assert.equal(env.worlds.Other.entries[0].comment, 'Update #1 for Alice');
+        ['Update Alice #1', 'Update Alice #2', 'Character: Carol', 'All NPC']);
+    assert.equal(env.worlds.Other.entries[0].comment, 'Update Alice #1');
 });
 
 test('mode changes preserve entries and resume counters after deletion and restart', async () => {
@@ -277,7 +277,7 @@ test('mode changes preserve entries and resume counters after deletion and resta
     assert.equal(restarted.world.entries[1].content, 'One');
     await toggleSeparate(restarted, true);
     await restarted.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Three');
-    assert.equal(restarted.world.entries[2].comment, 'Update #3 for Alice');
+    assert.equal(restarted.world.entries[2].comment, 'Update Alice #3');
     assert.equal(restarted.world.entries[2].content, 'Three');
 });
 
@@ -291,10 +291,10 @@ test('number selection uses exact names and maximum saved or existing number', a
         env.world.entries[i] = { uid: i, comment };
     }
     await env.api.createOrUpdateLorebookEntry('Test', name, 'Nine');
-    assert.equal(env.world.entries[5].comment, 'Update #9 for A.* [test]');
+    assert.equal(env.world.entries[5].comment, 'Update A.* [test] #9');
     env.world.entries = {};
     await env.api.createOrUpdateLorebookEntry('Test', name, 'Ten');
-    assert.equal(env.world.entries[0].comment, 'Update #10 for A.* [test]');
+    assert.equal(env.world.entries[0].comment, 'Update A.* [test] #10');
 });
 
 for (const failure of ['load missing', 'load throws', 'save throws']) {
@@ -316,7 +316,7 @@ for (const failure of ['load missing', 'load throws', 'save throws']) {
         env.context.loadWorldInfo = load;
         env.context.saveWorldInfo = save;
         assert.equal(await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Retry'), true);
-        assert.equal(env.world.entries[0].comment, 'Update #1 for Alice');
+        assert.equal(env.world.entries[0].comment, 'Update Alice #1');
     });
 }
 
@@ -368,7 +368,7 @@ for (const separateUpdateEntries of [false, true]) {
         assert.equal(entries.length, 7);
         assert.deepEqual(entries.map(e => e.key[0]), names);
         assert.deepEqual(entries.map(e => e.content), parts);
-        assert.deepEqual(entries.map(e => e.comment), names.map(name => separateUpdateEntries ? `Update #1 for ${name}` : `Update for ${name}`));
+        assert.deepEqual(entries.map(e => e.comment), names.map(name => separateUpdateEntries ? `Update ${name} #1` : `Update for ${name}`));
         assert.equal(env.context.chat[0].mes, 'BeforeAfter');
     });
 }
@@ -380,7 +380,7 @@ test('siblings support custom delimiters, mixed tag case, quoted angles and repe
     env.context.chat.push({ mes: `[updates]${parts.join('\n')}[/updates]` });
     await env.api.processUpdates(0);
     assert.deepEqual(Object.values(env.world.entries).map(e => e.content), parts);
-    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update #1 for Alice', 'Update #2 for Alice']);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update Alice #1', 'Update Alice #2']);
 });
 
 test('partial failure keeps only unsaved siblings for retry and preserves other failed blocks', async () => {
@@ -401,7 +401,7 @@ test('partial failure keeps only unsaved siblings for retry and preserves other 
     assert.ok(env.context.chat[0].mes.includes(invalid));
     env.context.saveWorldInfo = save;
     await env.api.processUpdates(0);
-    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update #1 for Alice', 'Update #1 for Bob']);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update Alice #1', 'Update Bob #1']);
     assert.equal(env.context.chat[0].mes, invalid);
 });
 
@@ -419,3 +419,28 @@ for (const content of [
         assert.equal(env.context.chat[0].mes, original);
     });
 }
+
+test('numbering continues from both title formats and matches the entire character name', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const name = 'Alice #2';
+    const comments = ['Update #7 for Alice #2', 'Update Alice #2 #9',
+        'Update Alice #2 extra #80', 'Update alice #2 #90', 'Update Alice #99'];
+    comments.forEach((comment, uid) => { env.world.entries[uid] = { uid, comment }; });
+    await env.api.createOrUpdateLorebookEntry('Test', name, 'Next');
+    assert.equal(env.world.entries[5].comment, 'Update Alice #2 #10');
+    assert.deepEqual(Object.values(env.world.entries).slice(0, 5).map(e => e.comment), comments);
+});
+
+test('outer delimiters determine creation or update regardless of the NPC tag', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const content = '<npc_update name="Alice">Status changed.</npc_update>';
+    env.context.chat.push({ mes: wrap(content) });
+    await env.api.processMessage(0);
+    await env.api.processUpdates(0);
+    assert.equal(env.world.entries[0].comment, 'Character: Alice');
+    env.context.chat.push({ mes: wrap(content, true) });
+    await env.api.processMessage(1);
+    await env.api.processUpdates(1);
+    assert.ok(Object.values(env.world.entries).some(e => e.comment === 'Update Alice #1'));
+    assert.equal(Object.values(env.world.entries).filter(e => e.comment === 'Character: Alice').length, 1);
+});

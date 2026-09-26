@@ -144,7 +144,7 @@ async function renderSettings() {
                         <input id="char_saver_separate_update_entries" type="checkbox">
                         <span>Save each update as a separate entry</span>
                     </label>
-                    <small>Off: append to "Update for [Name]". On: create "Update #1 for [Name]", "Update #2 for [Name]", etc. Numbers increase per character and lorebook, even after deleting entries.</small>
+                    <small>Off: append to "Update for [Name]". On: create "Update [Name] #1", "Update [Name] #2", etc. Numbers increase per character and lorebook, even after deleting entries.</small>
                 </div>
                 <div class="marginBot5">
                     <label for="char_saver_update_start_delimiter">Start Delimiter</label>
@@ -643,9 +643,14 @@ function nextUpdateNumber(worldData, worldName, characterName) {
         }
     }
     for (const entry of Object.values(worldData.entries || {})) {
-        const match = /^Update #([1-9]\d*) for ([\s\S]*)$/.exec(entry.comment || '');
-        if (match && match[2] === characterName) {
-            const number = Number(match[1]);
+        const comment = entry.comment || '';
+        const current = /^Update ([\s\S]*) #([1-9]\d*)$/.exec(comment);
+        const legacy = /^Update #([1-9]\d*) for ([\s\S]*)$/.exec(comment);
+        const matchingNumbers = [];
+        if (current && current[1] === characterName) matchingNumbers.push(current[2]);
+        if (legacy && legacy[2] === characterName) matchingNumbers.push(legacy[1]);
+        for (const value of matchingNumbers) {
+            const number = Number(value);
             if (!Number.isSafeInteger(number)) throw new Error('Update number exceeds safe integer range');
             highest = Math.max(highest, number);
         }
@@ -685,7 +690,7 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
                 newEntry.key = [characterName]; // Same trigger as character entries
                 newEntry.keysecondary = [];
                 newEntry.content = updateContent;
-                newEntry.comment = separateUpdates ? `Update #${number} for ${characterName}` : `Update for ${characterName}`;
+                newEntry.comment = separateUpdates ? `Update ${characterName} #${number}` : `Update for ${characterName}`;
                 newEntry.order = 100;
                 newEntry.constant = false;
                 newEntry.vectorized = true;

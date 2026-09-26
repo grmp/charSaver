@@ -101,11 +101,15 @@ Name: Verena Cortez
 
 By default, new content is appended to an existing "Update for [Name]" entry, or that entry is created if missing.
 
-Enable **Save each update as a separate entry** under **Extensions → Character Saver → Character Updates** to create "Update #1 for [Name]", "Update #2 for [Name]", etc. Each update block becomes its own entry. Numbers increase independently for each exact character name in each lorebook.
+Enable **Save each update as a separate entry** under **Extensions → Character Saver → Character Updates** to create "Update [Name] #1", "Update [Name] #2", etc. Each update block becomes its own entry. Numbers increase independently for each exact character name in each lorebook.
 
 The last number is saved in the extension settings, so deleting entries does not reuse their numbers. Existing numbered entries are also checked when choosing the next number. Keep these settings when moving installations to preserve deleted entries' number history; lorebook renames are treated as a new counter scope.
 
 Switching modes affects future updates only: existing entries are not renamed, split, or merged. Switching back to separate entries resumes numbering. This setting applies globally across chats.
+
+New numbered entries use `Update [Name] #Number`. Existing `Update #Number for [Name]` titles remain unchanged and still count toward the next number.
+
+The outer delimiters determine whether content creates a `Character: [Name]` entry or an update. An `<npc_update>` tag inside the character introduction delimiters still creates a character entry; there is no fallback from failed updates to character creation. Keep introduction and update delimiters distinct.
 
 ## NPC XML Tags
 
@@ -184,7 +188,7 @@ Regression tests can be run with `node --test test/*.test.mjs`.
 1. When the AI generates a message with character progression/updates
 2. The extension detects the `<!-- update character start` ... `update character end -->` delimiters
 3. Extracts the character name and update content
-4. Appends to "Update for [Name]" or creates "Update #Number for [Name]", depending on the selected mode
+4. Appends to "Update for [Name]" or creates "Update [Name] #Number", depending on the selected mode
 5. Removes the update block from the displayed message
 
 ## Settings
