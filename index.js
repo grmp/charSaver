@@ -144,7 +144,7 @@ async function renderSettings() {
                         <input id="char_saver_separate_update_entries" type="checkbox">
                         <span>Save each update as a separate entry</span>
                     </label>
-                    <small>Off: append to "Update for [Name]". On: create "Update #1 for [Name]", "Update #2 for [Name]", etc. Numbers increase per character and lorebook, even after deleting entries.</small>
+                    <small>Off: append to "Update for [Name]". On: create "Update [Name] #1", "Update [Name] #2", etc. Numbers increase per character and lorebook, even after deleting entries.</small>
                 </div>
                 <div class="marginBot5">
                     <label for="char_saver_update_start_delimiter">Start Delimiter</label>
@@ -316,14 +316,25 @@ function extractNpcName(content) {
 }
 
 /**
+ * Removes boundary markers while preserving the content inside the block.
+ */
+function stripBlockDelimiters(block, startDelimiter, endDelimiter) {
+    // Some responses wrap the closing marker in its own HTML comment.
+    // Consume that opener only at the boundary of a comment-style delimiter.
+    const optionalOpener = endDelimiter.trimEnd().endsWith('-->')
+        && !endDelimiter.trimStart().startsWith('<!--') ? '(?:<!--\\s*)?' : '';
+    return block.trim()
+        .replace(new RegExp(`^${escapeRegExp(startDelimiter)}`, 'i'), '')
+        .replace(new RegExp(`${optionalOpener}${escapeRegExp(endDelimiter)}$`, 'i'), '')
+        .trim();
+}
+
+/**
  * Parses a character block to extract name and description
  */
 function parseCharacterBlock(block) {
     try {
-        let content = block
-            .replace(new RegExp(escapeRegExp(START_DELIMITER()), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(END_DELIMITER()), 'gi'), '')
-            .trim();
+        const content = stripBlockDelimiters(block, START_DELIMITER(), END_DELIMITER());
 
         const npc = extractNpcName(content);
         if (npc?.name) {
@@ -407,10 +418,7 @@ function removeCharacterBlocks(messageContent) {
  */
 function parseUpdateBlock(block) {
     try {
-        let content = block
-            .replace(new RegExp(escapeRegExp(settings.updateStartDelimiter), 'gi'), '')
-            .replace(new RegExp(escapeRegExp(settings.updateEndDelimiter), 'gi'), '')
-            .trim();
+        const content = stripBlockDelimiters(block, settings.updateStartDelimiter, settings.updateEndDelimiter);
 
         const npc = extractNpcName(content);
         if (npc?.name) {
@@ -635,9 +643,14 @@ function nextUpdateNumber(worldData, worldName, characterName) {
         }
     }
     for (const entry of Object.values(worldData.entries || {})) {
-        const match = /^Update #([1-9]\d*) for ([\s\S]*)$/.exec(entry.comment || '');
-        if (match && match[2] === characterName) {
-            const number = Number(match[1]);
+        const comment = entry.comment || '';
+        const current = /^Update ([\s\S]*) #([1-9]\d*)$/.exec(comment);
+        const legacy = /^Update #([1-9]\d*) for ([\s\S]*)$/.exec(comment);
+        const matchingNumbers = [];
+        if (current && current[1] === characterName) matchingNumbers.push(current[2]);
+        if (legacy && legacy[2] === characterName) matchingNumbers.push(legacy[1]);
+        for (const value of matchingNumbers) {
+            const number = Number(value);
             if (!Number.isSafeInteger(number)) throw new Error('Update number exceeds safe integer range');
             highest = Math.max(highest, number);
         }
@@ -677,7 +690,7 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
                 newEntry.key = [characterName]; // Same trigger as character entries
                 newEntry.keysecondary = [];
                 newEntry.content = updateContent;
-                newEntry.comment = separateUpdates ? `Update #${number} for ${characterName}` : `Update for ${characterName}`;
+                newEntry.comment = separateUpdates ? `Update ${characterName} #${number}` : `Update for ${characterName}`;
                 newEntry.order = 100;
                 newEntry.constant = false;
                 newEntry.vectorized = true;
@@ -779,6 +792,43 @@ async function processMessage(messageId) {
 }
 
 /**
+ * Splits sibling NPC elements inside one update delimiter block.
+ * Keep the single-element and legacy text paths unchanged.
+ */
+function splitUpdateBlock(block) {
+    const content = stripBlockDelimiters(block, settings.updateStartDelimiter, settings.updateEndDelimiter);
+    const tokens = /<!--[\s\S]*?-->|<(\/?)(npc_update|npc)(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/gi;
+    const elements = [];
+    let opening = null;
+    let openingCount = 0;
+    let malformed = false;
+    let end = 0;
+    let remainder = '';
+    for (const token of content.matchAll(tokens)) {
+        if (!token[2]) continue; // Ignore tags quoted inside HTML comments.
+        if (!token[1]) {
+            openingCount++;
+            if (opening || /\/\s*$/.test(token[3])) malformed = true;
+            if (!opening) opening = { index: token.index, tag: token[2].toLowerCase() };
+        } else if (opening && opening.tag === token[2].toLowerCase()) {
+            remainder += content.slice(end, opening.index);
+            end = token.index + token[0].length;
+            elements.push(content.slice(opening.index, end));
+            opening = null;
+        } else {
+            malformed = true;
+        }
+    }
+    if (openingCount <= 1) return [block];
+    remainder += content.slice(end);
+    if (malformed || opening || remainder.trim()) {
+        console.warn(`[${MODULE_NAME}] Cannot safely split update block; leaving it in the message`);
+        return [];
+    }
+    return elements.map(content => `${settings.updateStartDelimiter}\n${content}\n${settings.updateEndDelimiter}`);
+}
+
+/**
  * Processes a newly received message for character progression updates
  */
 async function processUpdates(messageId) {
@@ -811,12 +861,16 @@ async function processUpdates(messageId) {
         console.log(`[${MODULE_NAME}] Found ${updateBlocks.length} character progression update(s)`);
 
         const updatedCharacters = [];
+        let remainingMessage = messageContent;
 
         for (const block of updateBlocks) {
-            const updateData = parseUpdateBlock(block);
+            const parts = splitUpdateBlock(block);
+            const failedParts = [];
+            let saved = 0;
+            for (const part of parts) {
+                const updateData = parseUpdateBlock(part);
 
-            if (updateData) {
-                const success = await createOrUpdateLorebookEntry(
+                const success = updateData && await createOrUpdateLorebookEntry(
                     worldName,
                     updateData.name,
                     updateData.content
@@ -824,6 +878,16 @@ async function processUpdates(messageId) {
 
                 if (success) {
                     updatedCharacters.push(updateData.name);
+                    saved++;
+                } else {
+                    failedParts.push(part);
+                }
+            }
+            if (saved > 0) {
+                if (failedParts.length) {
+                    remainingMessage = remainingMessage.replace(block, () => failedParts.join('\n'));
+                } else {
+                    remainingMessage = remainingMessage.replace(new RegExp(`\\s*${escapeRegExp(block)}\\s*`), '').trim();
                 }
             }
         }
@@ -831,7 +895,7 @@ async function processUpdates(messageId) {
         if (updatedCharacters.length > 0) {
             // Remove update blocks from message (same behavior as character creation)
             console.log(`[${MODULE_NAME}] Message BEFORE edit:\n${messageContent}`);
-            message.mes = removeUpdateBlocks(messageContent);
+            message.mes = remainingMessage;
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
