@@ -11,6 +11,7 @@ function setup(customSettings = {}, initialWorlds = {}) {
     const world = { entries: {} };
     const worlds = { Test: world, ...initialWorlds };
     const calls = { save: 0, chat: 0, settings: 0, metadata: 0 };
+    const handlers = {};
     const elements = new Map();
     const element = id => {
         if (!elements.has(id)) elements.set(id, { value: '', checked: false, listeners: {},
@@ -23,7 +24,7 @@ function setup(customSettings = {}, initialWorlds = {}) {
         saveSettingsDebounced() { calls.settings++; },
         console: { log() {}, warn() {}, debug() {}, error() {} },
         extension_settings: { characterSaver: customSettings },
-        eventSource: { on() {} },
+        eventSource: { on(type, handler) { handlers[type] = handler; } },
         event_types: { APP_READY: 'ready', CHAT_CHANGED: 'chat', MESSAGE_RECEIVED: 'message' },
         chat: [], chat_metadata: { world: 'Test' }, METADATA_KEY: 'world',
         world_names: ['Test'],
@@ -39,7 +40,7 @@ function setup(customSettings = {}, initialWorlds = {}) {
         updateWorldInfoList() {},
     });
     vm.runInContext(source, context);
-    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element };
+    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element, handlers };
 }
 
 function wrap(content, update = false) {
@@ -471,5 +472,216 @@ test('pause for this chat persists to chat metadata, renders, and blocks process
     assert.equal(env.api.isPausedForChat(), false);
     assert.equal('characterSaverPaused' in env.context.chat_metadata, false);
     await env.api.processMessage(0);
-    assert.ok(Object.values(env.world.entries).some(e => e.comment === 'Character: Alice')); 
+    assert.ok(Object.values(env.world.entries).some(e => e.comment === 'Character: Alice'));
+});
+
+function deferred() {
+    let resolve;
+    const promise = new Promise(accept => { resolve = accept; });
+    return { promise, resolve };
+}
+
+for (const initiallyPaused of [false, true]) {
+    test(`hidden settings reflect the new chat's pause state, initiallyPaused=${initiallyPaused}`, async () => {
+        const env = setup();
+        if (initiallyPaused) env.api.setPausedForChat(true);
+        await vm.runInContext('renderSettings()', env.context);
+        assert.equal(env.element('char_saver_paused_for_chat').checked, initiallyPaused);
+        env.element('#extensions_settings #char-saver-settings').offsetParent = null;
+        env.context.chat_metadata = { world: 'Test', characterSaverPaused: !initiallyPaused };
+        await env.handlers.chat();
+        assert.equal(env.element('char_saver_paused_for_chat').checked, !initiallyPaused);
+    });
+}
+
+test('pause state is restored from saved chat metadata after a reload', async () => {
+    const env = setup();
+    env.api.setPausedForChat(true);
+    const savedMetadata = JSON.parse(JSON.stringify(env.context.chat_metadata));
+    const reloaded = setup();
+    reloaded.context.chat_metadata = savedMetadata;
+    await vm.runInContext('renderSettings()', reloaded.context);
+    assert.equal(reloaded.api.isPausedForChat(), true);
+    assert.equal(reloaded.element('char_saver_paused_for_chat').checked, true);
+});
+
+for (const mode of ['creation', 'append', 'numbered']) {
+    const update = mode !== 'creation';
+    const messageFor = name => wrap(`<${update ? 'npc_update' : 'npc'} name="${name}">Text</${update ? 'npc_update' : 'npc'}>`, update);
+    const process = (env, id) => update ? env.api.processUpdates(id) : env.api.processMessage(id);
+    const makeEnv = () => setup({ separateUpdateEntries: mode === 'numbered' });
+
+    test(`${mode}: pausing during lorebook loading cancels the write and preserves the message`, async () => {
+        const env = makeEnv();
+        const loadStarted = deferred();
+        const finishLoad = deferred();
+        const load = env.context.loadWorldInfo;
+        env.context.loadWorldInfo = () => { loadStarted.resolve(); return finishLoad.promise; };
+        const original = messageFor('Alice');
+        env.context.chat.push({ mes: original });
+        const pending = process(env, 0);
+        await loadStarted.promise;
+        env.api.setPausedForChat(true);
+        finishLoad.resolve({ entries: {} });
+        await pending;
+        assert.equal(env.calls.save, 0);
+        assert.equal(env.calls.chat, 0);
+        assert.equal(env.calls.settings, 0);
+        assert.equal(env.context.chat[0].mes, original);
+        env.context.loadWorldInfo = load;
+        env.api.setPausedForChat(false);
+        await process(env, 0);
+        assert.equal(env.calls.save, 1);
+        assert.equal(env.context.chat[0].mes, '');
+    });
+
+    test(`${mode}: quickly unpausing does not revive a cancelled operation`, async () => {
+        const env = makeEnv();
+        const loadStarted = deferred();
+        const finishLoad = deferred();
+        env.context.loadWorldInfo = () => { loadStarted.resolve(); return finishLoad.promise; };
+        const original = messageFor('Alice');
+        env.context.chat.push({ mes: original });
+        const pending = process(env, 0);
+        await loadStarted.promise;
+        env.api.setPausedForChat(true);
+        env.api.setPausedForChat(false);
+        finishLoad.resolve({ entries: {} });
+        await pending;
+        assert.equal(env.calls.save, 0);
+        assert.equal(env.context.chat[0].mes, original);
+    });
+
+    test(`${mode}: pausing cancels queued writes and preserves their blocks`, async () => {
+        const env = makeEnv();
+        const saveStarted = deferred();
+        const finishSave = deferred();
+        const save = env.context.saveWorldInfo;
+        env.context.saveWorldInfo = async (...args) => {
+            saveStarted.resolve();
+            await finishSave.promise;
+            await save(...args);
+        };
+        env.context.chat.push({ mes: messageFor('Alice') }, { mes: messageFor('Bob') });
+        const first = process(env, 0);
+        await saveStarted.promise;
+        const second = process(env, 1);
+        // Allow the second operation to enter the lorebook's write queue.
+        await new Promise(resolve => setImmediate(resolve));
+        env.api.setPausedForChat(true);
+        finishSave.resolve();
+        await Promise.all([first, second]);
+        assert.equal(env.calls.save, 1);
+        assert.equal(env.context.chat[0].mes, '');
+        assert.equal(env.context.chat[1].mes, messageFor('Bob'));
+        assert.ok(!Object.values(env.world.entries).some(e => e.key?.[0] === 'Bob'));
+    });
+
+    test(`${mode}: cancelling after one save leaves subsequent blocks available for retry`, async () => {
+        const env = makeEnv();
+        const save = env.context.saveWorldInfo;
+        env.context.saveWorldInfo = async (...args) => {
+            await save(...args);
+            env.api.setPausedForChat(true);
+        };
+        env.context.chat.push({ mes: messageFor('Alice') + '\n' + messageFor('Bob') });
+        await process(env, 0);
+        assert.equal(env.calls.save, 1);
+        assert.equal(env.context.chat[0].mes, messageFor('Bob'));
+        env.context.saveWorldInfo = save;
+        env.api.setPausedForChat(false);
+        await process(env, 0);
+        assert.equal(env.calls.save, 2);
+        assert.equal(env.context.chat[0].mes, '');
+        assert.equal(Object.values(env.world.entries).filter(e => e.key?.[0] === 'Alice').length, 1);
+    });
+
+    test(`${mode}: a chat change during loading prevents writes to the previous chat`, async () => {
+        const env = makeEnv();
+        const loadStarted = deferred();
+        const finishLoad = deferred();
+        env.context.loadWorldInfo = () => { loadStarted.resolve(); return finishLoad.promise; };
+        const original = messageFor('Alice');
+        env.context.chat.push({ mes: original });
+        const pending = process(env, 0);
+        await loadStarted.promise;
+        env.context.chat_metadata = { world: 'Other' };
+        env.context.chat = [{ mes: 'Another chat' }];
+        await env.handlers.chat();
+        finishLoad.resolve({ entries: {} });
+        await pending;
+        assert.equal(env.calls.save, 0);
+        assert.equal(env.calls.chat, 0);
+        assert.equal(env.context.chat[0].mes, 'Another chat');
+    });
+}
+
+test('paused update blocks remain untouched and resume normally', async () => {
+    const env = setup();
+    const original = wrap('<npc_update name="Alice">Update</npc_update>', true);
+    env.context.chat.push({ mes: original });
+    env.api.setPausedForChat(true);
+    await env.api.processUpdates(0);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.context.chat[0].mes, original);
+    env.api.setPausedForChat(false);
+    await env.api.processUpdates(0);
+    assert.equal(env.calls.save, 1);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('pausing between sibling update saves preserves the unsaved siblings', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const alice = '<npc_update name="Alice">First</npc_update>';
+    const bob = '<npc_update name="Bob">Second</npc_update>';
+    const save = env.context.saveWorldInfo;
+    env.context.saveWorldInfo = async (...args) => {
+        await save(...args);
+        env.api.setPausedForChat(true);
+    };
+    env.context.chat.push({ mes: wrap(alice + '\n' + bob, true) });
+    await env.api.processUpdates(0);
+    assert.equal(env.calls.save, 1);
+    assert.equal(env.context.chat[0].mes, wrap(bob, true));
+    env.context.saveWorldInfo = save;
+    env.api.setPausedForChat(false);
+    await env.api.processUpdates(0);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update Alice #1', 'Update Bob #1']);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('the message event does not resume cancelled work after a quick pause and unpause', async () => {
+    const env = setup();
+    const save = env.context.saveWorldInfo;
+    env.context.saveWorldInfo = async (...args) => {
+        await save(...args);
+        env.api.setPausedForChat(true);
+        env.api.setPausedForChat(false);
+    };
+    const update = wrap('<npc_update name="Alice">Update</npc_update>', true);
+    env.context.chat.push({ mes: wrap('<npc name="Alice">Creation</npc>') + '\n' + update });
+    await env.handlers.message(0);
+    assert.equal(env.calls.save, 1);
+    assert.equal(env.context.chat[0].mes, update);
+});
+
+test('pausing while lorebook confirmation is pending prevents lorebook creation', async () => {
+    const env = setup();
+    const popupStarted = deferred();
+    const confirmation = deferred();
+    delete env.context.chat_metadata.world;
+    env.context.POPUP_TYPE = { CONFIRM: 1 };
+    env.context.callGenericPopup = () => { popupStarted.resolve(); return confirmation.promise; };
+    let created = 0;
+    env.context.createNewWorldInfo = async () => { created++; };
+    const original = wrap('<npc name="Alice">Creation</npc>');
+    env.context.chat.push({ mes: original });
+    const pending = env.api.processMessage(0);
+    await popupStarted.promise;
+    env.api.setPausedForChat(true);
+    confirmation.resolve(true);
+    await pending;
+    assert.equal(created, 0);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.context.chat[0].mes, original);
 });

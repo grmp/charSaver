@@ -195,6 +195,7 @@ Regression tests can be run with `node --test test/*.test.mjs`.
 
 The extension settings can be found in **Extensions → Character Saver**:
 
+- **Pause for this Chat**: Stops new and pending message processing in the current chat (default: off). The setting is saved per chat and restored when switching chats or reloading. Unsaved delimiter blocks remain in the messages; a save already in progress may finish, and only its successfully saved blocks are removed. Unpausing allows future messages to be processed and does not automatically replay skipped messages or restart cancelled work.
 - **Character Creation Start Delimiter**: Marks the beginning of a character introduction (default: `<!-- new character start`)
 - **Character Creation End Delimiter**: Marks the end of a character introduction (default: `new character end -->`)
 - **Character Update Start Delimiter**: Marks the beginning of a character update (default: `<!-- update character start`)
