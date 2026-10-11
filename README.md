@@ -195,6 +195,7 @@ Regression tests can be run with `node --test test/*.test.mjs`.
 
 The extension settings can be found in **Extensions → Character Saver**:
 
+- **Pause für diesen Chat**: Pauses Character Saver for the current chat (default: off). While checked, no character introductions or updates are processed, no lorebook creation prompt is shown, and message blocks remain untouched. The pause is saved in chat metadata, survives reloads, and is restored when switching chats. Unchecking resumes processing future messages; skipped messages are not automatically processed retroactively. Work waiting for a lorebook read or queued write is stopped when pausing; a save already sent to SillyTavern cannot be undone.
 - **Character Creation Start Delimiter**: Marks the beginning of a character introduction (default: `<!-- new character start`)
 - **Character Creation End Delimiter**: Marks the end of a character introduction (default: `new character end -->`)
 - **Character Update Start Delimiter**: Marks the beginning of a character update (default: `<!-- update character start`)

@@ -7,10 +7,11 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
     .replace(/^import\s*\{[\s\S]*?\}\s*from\s*'[^']+';\s*/gm, '');
 
-function setup(customSettings = {}, initialWorlds = {}) {
+function setup(customSettings = {}, initialWorlds = {}, metadata = { world: 'Test' }) {
     const world = { entries: {} };
     const worlds = { Test: world, ...initialWorlds };
-    const calls = { save: 0, chat: 0, settings: 0 };
+    const calls = { save: 0, chat: 0, settings: 0, metadata: 0, popup: 0, createWorld: 0, load: 0, message: 0, toast: 0 };
+    const events = new Map();
     const elements = new Map();
     const element = id => {
         if (!elements.has(id)) elements.set(id, { value: '', checked: false, listeners: {},
@@ -23,22 +24,27 @@ function setup(customSettings = {}, initialWorlds = {}) {
         saveSettingsDebounced() { calls.settings++; },
         console: { log() {}, warn() {}, debug() {}, error() {} },
         extension_settings: { characterSaver: customSettings },
-        eventSource: { on() {} },
+        eventSource: { on(type, handler) { events.set(type, handler); } },
         event_types: { APP_READY: 'ready', CHAT_CHANGED: 'chat', MESSAGE_RECEIVED: 'message' },
-        chat: [], chat_metadata: { world: 'Test' }, METADATA_KEY: 'world',
+        chat: [], chat_metadata: metadata, METADATA_KEY: 'world',
         world_names: ['Test'],
-        loadWorldInfo: async name => worlds[name] || (worlds[name] = { entries: {} }),
+        loadWorldInfo: async name => { calls.load++; return worlds[name] || (worlds[name] = { entries: {} }); },
         createWorldInfoEntry: (name, data) => {
             const uid = Math.max(-1, ...Object.keys(data.entries).map(Number)) + 1;
             return data.entries[uid] = { uid };
         },
         saveWorldInfo: async (name, data) => { calls.save++; worlds[name].entries = structuredClone(data.entries); },
-        updateMessageBlock() {},
+        updateMessageBlock() { calls.message++; },
         saveChatConditional: async () => { calls.chat++; },
+        saveMetadata: async () => { calls.metadata++; },
+        callGenericPopup: async () => { calls.popup++; return false; },
+        POPUP_TYPE: { CONFIRM: 'confirm' },
+        createNewWorldInfo: async () => { calls.createWorld++; },
+        toastr: { success() { calls.toast++; } },
         updateWorldInfoList() {},
     });
     vm.runInContext(source, context);
-    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element };
+    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element, events };
 }
 
 function wrap(content, update = false) {
@@ -213,6 +219,160 @@ async function toggleSeparate(env, checked) {
     checkbox.checked = checked;
     checkbox.listeners.change();
 }
+
+async function togglePause(env, checked) {
+    await vm.runInContext('renderSettings()', env.context);
+    const checkbox = env.element('char_saver_pause_chat');
+    checkbox.checked = checked;
+    await checkbox.listeners.change();
+}
+
+test('chat pause defaults off and persists in metadata without changing global settings', async () => {
+    const env = setup({ separateUpdateEntries: true }, {}, { world: 'Test', characterSaver: { custom: 'keep' }, other: 'keep' });
+    await vm.runInContext('renderSettings()', env.context);
+    assert.equal(env.element('char_saver_pause_chat').checked, false);
+    await togglePause(env, true);
+    assert.equal(env.calls.metadata, 1);
+    assert.equal(env.calls.settings, 0);
+    assert.deepEqual({ ...env.context.chat_metadata.characterSaver }, { custom: 'keep', paused: true });
+    assert.equal(env.context.chat_metadata.other, 'keep');
+    assert.equal(env.context.chat_metadata.world, 'Test');
+    assert.equal(env.context.extension_settings.characterSaver.separateUpdateEntries, true);
+
+    const reloaded = setup({}, {}, structuredClone(env.context.chat_metadata));
+    await vm.runInContext('renderSettings()', reloaded.context);
+    assert.equal(reloaded.element('char_saver_pause_chat').checked, true);
+});
+
+test('chat switching restores the pause checkbox even when settings are hidden', async () => {
+    const env = setup();
+    await togglePause(env, true);
+    const pausedMetadata = env.context.chat_metadata;
+    env.element('#extensions_settings #char-saver-settings').offsetParent = null;
+    env.context.chat_metadata = { world: 'Test' };
+    await env.events.get('chat')();
+    assert.equal(env.element('char_saver_pause_chat').checked, false);
+    env.context.chat_metadata = pausedMetadata;
+    await env.events.get('chat')();
+    assert.equal(env.element('char_saver_pause_chat').checked, true);
+    assert.equal(env.calls.metadata, 1);
+});
+
+for (const separateUpdateEntries of [false, true]) {
+    test(`paused chat skips events and direct processing, including updates (separate=${separateUpdateEntries})`, async () => {
+        const env = setup({ separateUpdateEntries }, {}, { characterSaver: { paused: true } });
+        const original = `${wrap('Name: Alice\nDescription.')}\n${wrap('Name: Alice\nUpdate.', true)}`;
+        env.context.chat.push({ mes: original });
+        await env.events.get('message')(0, 'normal');
+        await env.api.processMessage(0);
+        await env.api.processUpdates(0);
+        assert.equal(await env.api.getOrCreateWorldInfoName(), null);
+        assert.equal(await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Update.'), false);
+        assert.equal(env.context.chat[0].mes, original);
+        assert.equal(Object.keys(env.world.entries).length, 0);
+        for (const count of Object.values(env.calls)) assert.equal(count, 0);
+    });
+}
+
+test('unchecking resumes future messages and leaves skipped messages untouched', async () => {
+    const env = setup();
+    await togglePause(env, true);
+    const skipped = `${wrap('Name: Skipped\nDescription.')}\n${wrap('Name: Skipped\nUpdate.', true)}`;
+    env.context.chat.push({ mes: skipped });
+    await env.events.get('message')(0, 'normal');
+    await togglePause(env, false);
+    env.context.chat.push({ mes: `${wrap('Name: Alice\nDescription.')}\n${wrap('Name: Alice\nUpdate.', true)}` });
+    await env.events.get('message')(1, 'normal');
+    assert.equal(env.context.chat[0].mes, skipped);
+    assert.equal(env.context.chat[1].mes, '');
+    assert.deepEqual(Object.values(env.world.entries).map(entry => entry.comment), ['Character: Alice', 'All NPC', 'Update for Alice']);
+    assert.equal(env.calls.metadata, 2);
+    assert.equal(env.context.chat_metadata.characterSaver.paused, false);
+});
+
+for (const update of [false, true]) {
+    test(`pausing during a pending lorebook read cancels ${update ? 'updates' : 'introductions'}`, async () => {
+        const env = setup();
+        let release;
+        let started;
+        const reading = new Promise(resolve => { started = resolve; });
+        env.context.loadWorldInfo = async () => {
+            started();
+            return new Promise(resolve => { release = () => resolve(env.world); });
+        };
+        const original = wrap('Name: Alice\nContent.', update);
+        env.context.chat.push({ mes: original });
+        const processing = update ? env.api.processUpdates(0) : env.api.processMessage(0);
+        await reading;
+        await togglePause(env, true);
+        release();
+        await processing;
+        assert.equal(env.calls.save, 0);
+        assert.equal(env.calls.chat, 0);
+        assert.equal(env.calls.toast, 0);
+        assert.equal(Object.keys(env.world.entries).length, 0);
+        assert.equal(env.context.chat[0].mes, original);
+    });
+}
+
+test('pausing cancels queued writes even if resumed before the pending read finishes', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    let release;
+    let started;
+    const reading = new Promise(resolve => { started = resolve; });
+    env.context.loadWorldInfo = async () => {
+        env.calls.load++;
+        started();
+        return new Promise(resolve => { release = () => resolve(env.world); });
+    };
+    const first = env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'First');
+    await reading;
+    const second = env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Second');
+    await togglePause(env, true);
+    await togglePause(env, false);
+    release();
+    assert.deepEqual(await Promise.all([first, second]), [false, false]);
+    assert.equal(env.calls.load, 1);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.calls.settings, 0);
+});
+
+test('pausing while the lorebook prompt is open prevents creation after confirmation', async () => {
+    const env = setup({}, {}, {});
+    let confirm;
+    env.context.callGenericPopup = () => new Promise(resolve => { confirm = resolve; });
+    const processing = env.api.getOrCreateWorldInfoName();
+    await togglePause(env, true);
+    confirm(true);
+    assert.equal(await processing, null);
+    assert.equal(env.calls.createWorld, 0);
+    assert.equal(env.context.chat_metadata.world, undefined);
+});
+
+test('switching chats cancels pending message processing before any writes', async () => {
+    const env = setup();
+    let release;
+    let started;
+    const reading = new Promise(resolve => { started = resolve; });
+    env.context.loadWorldInfo = async () => {
+        started();
+        return new Promise(resolve => { release = () => resolve(env.world); });
+    };
+    const original = wrap('Name: Alice\nDescription.');
+    const oldMessage = { mes: original };
+    env.context.chat.push(oldMessage);
+    const processing = env.events.get('message')(0, 'normal');
+    await reading;
+    env.context.chat_metadata = { world: 'Test' };
+    env.context.chat = [{ mes: wrap('Name: Bob\nNew chat update.', true) }];
+    await env.events.get('chat')();
+    release();
+    await processing;
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.calls.chat, 0);
+    assert.equal(oldMessage.mes, original);
+    assert.equal(env.context.chat[0].mes, wrap('Name: Bob\nNew chat update.', true));
+});
 
 test('settings checkbox defaults off, persists immediately, and restores on render and reload', async () => {
     const env = setup();

@@ -19,6 +19,24 @@ const defaultSettings = {
 // Current settings (will be loaded from extension_settings)
 let settings = { ...defaultSettings };
 
+// Pause belongs to the chat, while delimiter and update settings stay global.
+let processingRevision = 0;
+
+function isChatPaused() {
+    return chat_metadata.characterSaver?.paused === true;
+}
+
+function createProcessingGuard() {
+    const metadata = chat_metadata;
+    const revision = processingRevision;
+    return () => metadata === chat_metadata && revision === processingRevision && !isChatPaused();
+}
+
+function syncPauseCheckbox() {
+    const checkbox = document.getElementById('char_saver_pause_chat');
+    if (checkbox) checkbox.checked = isChatPaused();
+}
+
 // Serialize all entry writes to a lorebook, including character creation.
 const worldWriteQueues = new Map();
 
@@ -122,6 +140,16 @@ async function renderSettings() {
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
+                <label class="checkbox_label" for="char_saver_pause_chat">
+                    <input id="char_saver_pause_chat" type="checkbox">
+                    <span>Pause für diesen Chat</span>
+                </label>
+                <small>Bei gesetztem Haken verarbeitet Character Saver in diesem Chat keine Nachrichten und verändert keine Lorebook-Einträge.</small>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
                 <label>Character Creation</label>
                 <div class="marginBot5">
                     <label for="char_saver_start_delimiter">Start Delimiter</label>
@@ -181,6 +209,23 @@ async function renderSettings() {
     const updateStartInput = document.getElementById('char_saver_update_start_delimiter');
     const updateEndInput = document.getElementById('char_saver_update_end_delimiter');
     const separateUpdatesInput = document.getElementById('char_saver_separate_update_entries');
+    const pauseInput = document.getElementById('char_saver_pause_chat');
+
+    syncPauseCheckbox();
+    if (pauseInput) {
+        pauseInput.addEventListener('change', async () => {
+            chat_metadata.characterSaver = {
+                ...chat_metadata.characterSaver,
+                paused: pauseInput.checked,
+            };
+            processingRevision++;
+            try {
+                await saveMetadata();
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Error saving chat pause:`, error);
+            }
+        });
+    }
 
     if (separateUpdatesInput) {
         separateUpdatesInput.checked = settings.separateUpdateEntries === true;
@@ -241,6 +286,8 @@ eventSource.on(event_types.APP_READY, async () => {
 
 // Re-render settings when extension settings menu is opened
 eventSource.on(event_types.CHAT_CHANGED, async () => {
+    processingRevision++;
+    syncPauseCheckbox();
     const container = document.querySelector('#extensions_settings #char-saver-settings');
     if (container && container.offsetParent !== null) {
         await renderSettings();
@@ -463,7 +510,8 @@ function parseUpdateBlock(block) {
 /**
  * Gets or creates the current chat's World Info name
  */
-async function getOrCreateWorldInfoName() {
+async function getOrCreateWorldInfoName(canProcess = createProcessingGuard()) {
+    if (!canProcess()) return null;
     let worldName = chat_metadata[METADATA_KEY];
 
     console.log(`[${MODULE_NAME}] Detected World Info name: '${worldName}'`);
@@ -485,6 +533,8 @@ async function getOrCreateWorldInfoName() {
         { okButton: 'Create Lorebook' }
     );
 
+    if (!canProcess()) return null;
+
     if (!confirm) {
         console.log(`[${MODULE_NAME}] User cancelled lorebook creation`);
         return null;
@@ -501,6 +551,7 @@ async function getOrCreateWorldInfoName() {
     try {
         // Create the new World Info (this also calls updateWorldInfoList internally)
         await createNewWorldInfo(newWorldName, { interactive: false });
+        if (!canProcess()) return null;
 
         console.log(`[${MODULE_NAME}] Created new World Info: '${newWorldName}'`);
 
@@ -511,11 +562,13 @@ async function getOrCreateWorldInfoName() {
 
         // Save the metadata
         await saveMetadata();
+        if (!canProcess()) return null;
 
         console.log(`[${MODULE_NAME}] Metadata saved. Current chat_metadata[METADATA_KEY]:`, chat_metadata[METADATA_KEY]);
 
         // Wait a bit for the UI to update, then check if the lorebook is in the list
         await new Promise(resolve => setTimeout(resolve, 100));
+        if (!canProcess()) return null;
 
         // Check if the lorebook is in world_names; if not, manually add it
         let hasWorldInfo = world_names.includes(newWorldName);
@@ -564,12 +617,15 @@ function findUpdateEntry(worldData, characterName) {
 /**
  * Creates a new lorebook entry for a character
  */
-async function createLorebookEntry(worldName, characterName, description) {
+async function createLorebookEntry(worldName, characterName, description, canProcess = createProcessingGuard()) {
+    if (!canProcess()) return false;
     return queueWorldWrite(worldName, async () => {
+        if (!canProcess()) return false;
         try {
             console.log(`[${MODULE_NAME}] Creating entry for '${characterName}' in World Info: '${worldName}'`);
 
             const worldData = structuredClone(await loadWorldInfo(worldName));
+            if (!canProcess()) return false;
 
             if (!worldData) {
                 console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
@@ -662,13 +718,16 @@ function nextUpdateNumber(worldData, worldName, characterName) {
 /**
  * Creates a numbered update entry or appends to the unnumbered entry.
  */
-async function createOrUpdateLorebookEntry(worldName, characterName, updateContent) {
+async function createOrUpdateLorebookEntry(worldName, characterName, updateContent, canProcess = createProcessingGuard()) {
+    if (!canProcess()) return false;
     const separateUpdates = settings.separateUpdateEntries === true;
     return queueWorldWrite(worldName, async () => {
+        if (!canProcess()) return false;
         try {
             console.log(`[${MODULE_NAME}] Creating/updating entry for '${characterName}' in World Info: '${worldName}'`);
 
             const worldData = structuredClone(await loadWorldInfo(worldName));
+            if (!canProcess()) return false;
 
             if (!worldData) {
                 console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
@@ -702,6 +761,7 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
             }
 
             await saveWorldInfo(worldName, worldData, true);
+            if (!canProcess()) return false;
             if (separateUpdates) {
                 const counters = Array.isArray(settings.updateEntryCounters) ? settings.updateEntryCounters : [];
                 settings.updateEntryCounters = counters.filter(counter =>
@@ -722,6 +782,8 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
  * Processes a newly received message for character introductions
  */
 async function processMessage(messageId) {
+    const canProcess = createProcessingGuard();
+    if (!canProcess()) return;
     try {
         const message = chat[messageId];
 
@@ -735,7 +797,8 @@ async function processMessage(messageId) {
             return;
         }
 
-        const worldName = await getOrCreateWorldInfoName();
+        const worldName = await getOrCreateWorldInfoName(canProcess);
+        if (!canProcess()) return;
 
         if (!worldName) {
             console.warn(`[${MODULE_NAME}] Could not get or create World Info`);
@@ -753,14 +816,17 @@ async function processMessage(messageId) {
         const createdCharacters = [];
 
         for (const block of characterBlocks) {
+            if (!canProcess()) return;
             const characterData = parseCharacterBlock(block);
 
             if (characterData) {
                 const success = await createLorebookEntry(
                     worldName,
                     characterData.name,
-                    characterData.description
+                    characterData.description,
+                    canProcess
                 );
+                if (!canProcess()) return;
 
                 if (success) {
                     createdCharacters.push(characterData.name);
@@ -774,6 +840,7 @@ async function processMessage(messageId) {
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
+            if (!canProcess()) return;
 
             const names = createdCharacters.join(', ');
             if (typeof toastr !== 'undefined') {
@@ -832,6 +899,8 @@ function splitUpdateBlock(block) {
  * Processes a newly received message for character progression updates
  */
 async function processUpdates(messageId) {
+    const canProcess = createProcessingGuard();
+    if (!canProcess()) return;
     try {
         const message = chat[messageId];
 
@@ -845,7 +914,8 @@ async function processUpdates(messageId) {
             return;
         }
 
-        const worldName = await getOrCreateWorldInfoName();
+        const worldName = await getOrCreateWorldInfoName(canProcess);
+        if (!canProcess()) return;
 
         if (!worldName) {
             console.warn(`[${MODULE_NAME}] Could not get or create World Info for updates`);
@@ -864,17 +934,21 @@ async function processUpdates(messageId) {
         let remainingMessage = messageContent;
 
         for (const block of updateBlocks) {
+            if (!canProcess()) return;
             const parts = splitUpdateBlock(block);
             const failedParts = [];
             let saved = 0;
             for (const part of parts) {
+                if (!canProcess()) return;
                 const updateData = parseUpdateBlock(part);
 
                 const success = updateData && await createOrUpdateLorebookEntry(
                     worldName,
                     updateData.name,
-                    updateData.content
+                    updateData.content,
+                    canProcess
                 );
+                if (!canProcess()) return;
 
                 if (success) {
                     updatedCharacters.push(updateData.name);
@@ -899,6 +973,7 @@ async function processUpdates(messageId) {
             console.log(`[${MODULE_NAME}] Message AFTER edit:\n${message.mes}`);
             updateMessageBlock(messageId, message);
             await saveChatConditional();
+            if (!canProcess()) return;
 
             const names = updatedCharacters.join(', ');
             if (typeof toastr !== 'undefined') {
@@ -920,9 +995,12 @@ async function processUpdates(messageId) {
 
 // Set up event listener
 eventSource.on(event_types.MESSAGE_RECEIVED, async (chatId, type) => {
+    const canProcess = createProcessingGuard();
+    if (!canProcess()) return;
     console.log(`[${MODULE_NAME}] MESSAGE_RECEIVED event: chatId=${chatId}, type=${type}`);
     if (chatId >= 0 && chat[chatId] && !chat[chatId].is_user) {
         await processMessage(chatId);       // Character creation (removes blocks)
+        if (!canProcess()) return;
         await processUpdates(chatId);        // Character updates (removes blocks)
     }
 });
