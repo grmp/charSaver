@@ -122,6 +122,16 @@ async function renderSettings() {
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
+                <label class="checkbox_label" for="char_saver_paused_for_chat">
+                    <input id="char_saver_paused_for_chat" type="checkbox">
+                    <span>Pause for this Chat</span>
+                </label>
+                <small>While enabled, the extension does not process messages in this chat. Delimiter blocks stay untouched in the messages.</small>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
                 <label>Character Creation</label>
                 <div class="marginBot5">
                     <label for="char_saver_start_delimiter">Start Delimiter</label>
@@ -181,6 +191,14 @@ async function renderSettings() {
     const updateStartInput = document.getElementById('char_saver_update_start_delimiter');
     const updateEndInput = document.getElementById('char_saver_update_end_delimiter');
     const separateUpdatesInput = document.getElementById('char_saver_separate_update_entries');
+    const pausedForChatInput = document.getElementById('char_saver_paused_for_chat');
+
+    if (pausedForChatInput) {
+        pausedForChatInput.checked = isPausedForChat();
+        pausedForChatInput.addEventListener('change', () => {
+            setPausedForChat(pausedForChatInput.checked);
+        });
+    }
 
     if (separateUpdatesInput) {
         separateUpdatesInput.checked = settings.separateUpdateEntries === true;
@@ -223,6 +241,29 @@ async function renderSettings() {
     }
 
     console.log(`[${MODULE_NAME}] Settings UI rendered`);
+}
+
+const PAUSE_METADATA_KEY = 'characterSaverPaused';
+
+/**
+ * Returns whether the extension is paused for the current chat
+ */
+function isPausedForChat() {
+    return chat_metadata?.[PAUSE_METADATA_KEY] === true;
+}
+
+/**
+ * Persists the pause state for the current chat
+ */
+function setPausedForChat(paused) {
+    if (!chat_metadata) return;
+    if (paused) {
+        chat_metadata[PAUSE_METADATA_KEY] = true;
+    } else {
+        delete chat_metadata[PAUSE_METADATA_KEY];
+    }
+    saveMetadata();
+    console.log(`[${MODULE_NAME}] Pause for this chat: ${paused}`);
 }
 
 // Initialize settings
@@ -723,6 +764,11 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
  */
 async function processMessage(messageId) {
     try {
+        if (isPausedForChat()) {
+            console.log(`[${MODULE_NAME}] Paused for this chat, skipping message processing`);
+            return;
+        }
+
         const message = chat[messageId];
 
         if (!message || message.is_user || message.is_system) {
@@ -833,6 +879,11 @@ function splitUpdateBlock(block) {
  */
 async function processUpdates(messageId) {
     try {
+        if (isPausedForChat()) {
+            console.log(`[${MODULE_NAME}] Paused for this chat, skipping update processing`);
+            return;
+        }
+
         const message = chat[messageId];
 
         if (!message || message.is_user || message.is_system) {
@@ -941,6 +992,8 @@ if (typeof globalThis !== 'undefined') {
         parseUpdateBlock,
         removeUpdateBlocks,
         findUpdateEntry,
+        isPausedForChat,
+        setPausedForChat,
         createOrUpdateLorebookEntry,
         processUpdates,
     };

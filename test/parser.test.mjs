@@ -10,7 +10,7 @@ const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
 function setup(customSettings = {}, initialWorlds = {}) {
     const world = { entries: {} };
     const worlds = { Test: world, ...initialWorlds };
-    const calls = { save: 0, chat: 0, settings: 0 };
+    const calls = { save: 0, chat: 0, settings: 0, metadata: 0 };
     const elements = new Map();
     const element = id => {
         if (!elements.has(id)) elements.set(id, { value: '', checked: false, listeners: {},
@@ -34,6 +34,7 @@ function setup(customSettings = {}, initialWorlds = {}) {
         },
         saveWorldInfo: async (name, data) => { calls.save++; worlds[name].entries = structuredClone(data.entries); },
         updateMessageBlock() {},
+        saveMetadata: async () => { calls.metadata++; },
         saveChatConditional: async () => { calls.chat++; },
         updateWorldInfoList() {},
     });
@@ -443,4 +444,32 @@ test('outer delimiters determine creation or update regardless of the NPC tag', 
     await env.api.processUpdates(1);
     assert.ok(Object.values(env.world.entries).some(e => e.comment === 'Update Alice #1'));
     assert.equal(Object.values(env.world.entries).filter(e => e.comment === 'Character: Alice').length, 1);
+});
+
+test('pause for this chat persists to chat metadata, renders, and blocks processing', async () => {
+    const env = setup();
+    assert.equal(env.api.isPausedForChat(), false);
+    await vm.runInContext('renderSettings()', env.context);
+    const checkbox = env.element('char_saver_paused_for_chat');
+    assert.equal(checkbox.checked, false);
+    checkbox.checked = true;
+    checkbox.listeners.change();
+    assert.equal(env.api.isPausedForChat(), true);
+    assert.equal(env.context.chat_metadata.characterSaverPaused, true);
+    assert.equal(env.calls.metadata, 1);
+    await vm.runInContext('renderSettings()', env.context);
+    assert.equal(env.element('char_saver_paused_for_chat').checked, true);
+    const message = wrap('<npc name="Alice">Text</npc>');
+    env.context.chat.push({ mes: message });
+    await env.api.processMessage(0);
+    await env.api.processUpdates(0);
+    assert.equal(Object.keys(env.world.entries).length, 0);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.context.chat[0].mes, message);
+    checkbox.checked = false;
+    checkbox.listeners.change();
+    assert.equal(env.api.isPausedForChat(), false);
+    assert.equal('characterSaverPaused' in env.context.chat_metadata, false);
+    await env.api.processMessage(0);
+    assert.ok(Object.values(env.world.entries).some(e => e.comment === 'Character: Alice')); 
 });
