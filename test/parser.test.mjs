@@ -26,7 +26,7 @@ function setup(customSettings = {}, initialWorlds = {}) {
         extension_settings: { characterSaver: customSettings },
         eventSource: { on(type, handler) { handlers[type] = handler; } },
         event_types: { APP_READY: 'ready', CHAT_CHANGED: 'chat', MESSAGE_RECEIVED: 'message' },
-        chat: [], chat_metadata: { world: 'Test' }, METADATA_KEY: 'world',
+        chat: [], chat_metadata: { characterSaverWorld: 'Test' }, METADATA_KEY: 'world', name2: 'Hero',
         world_names: ['Test'],
         loadWorldInfo: async name => worlds[name] || (worlds[name] = { entries: {} }),
         createWorldInfoEntry: (name, data) => {
@@ -488,7 +488,7 @@ for (const initiallyPaused of [false, true]) {
         await vm.runInContext('renderSettings()', env.context);
         assert.equal(env.element('char_saver_paused_for_chat').checked, initiallyPaused);
         env.element('#extensions_settings #char-saver-settings').offsetParent = null;
-        env.context.chat_metadata = { world: 'Test', characterSaverPaused: !initiallyPaused };
+        env.context.chat_metadata = { characterSaverWorld: 'Test', characterSaverPaused: !initiallyPaused };
         await env.handlers.chat();
         assert.equal(env.element('char_saver_paused_for_chat').checked, !initiallyPaused);
     });
@@ -605,7 +605,7 @@ for (const mode of ['creation', 'append', 'numbered']) {
         env.context.chat.push({ mes: original });
         const pending = process(env, 0);
         await loadStarted.promise;
-        env.context.chat_metadata = { world: 'Other' };
+        env.context.chat_metadata = { characterSaverWorld: 'Other' };
         env.context.chat = [{ mes: 'Another chat' }];
         await env.handlers.chat();
         finishLoad.resolve({ entries: {} });
@@ -669,7 +669,7 @@ test('pausing while lorebook confirmation is pending prevents lorebook creation'
     const env = setup();
     const popupStarted = deferred();
     const confirmation = deferred();
-    delete env.context.chat_metadata.world;
+    delete env.context.chat_metadata.characterSaverWorld;
     env.context.POPUP_TYPE = { CONFIRM: 1 };
     env.context.callGenericPopup = () => { popupStarted.resolve(); return confirmation.promise; };
     let created = 0;
@@ -684,4 +684,106 @@ test('pausing while lorebook confirmation is pending prevents lorebook creation'
     assert.equal(created, 0);
     assert.equal(env.calls.save, 0);
     assert.equal(env.context.chat[0].mes, original);
+});
+
+test('sanitizeWorldName strips ":" and whitespace from lorebook names only', () => {
+    const { api } = setup();
+    assert.equal(api.sanitizeWorldName('A: B \n C\tD'), 'A B C D');
+    assert.equal(api.sanitizeWorldName(':::'), null);
+    assert.equal(api.sanitizeWorldName('   '), null);
+    assert.equal(api.sanitizeWorldName('My: Lorebook'), 'My Lorebook');
+    assert.equal(api.sanitizeWorldName('Ok-Name_1'), 'Ok-Name_1');
+});
+
+test('lorebook scope defaults to chat and can be switched per character', async () => {
+    const env = setup();
+    await vm.runInContext('renderSettings()', env.context);
+    const scope = env.element('char_saver_lorebook_scope');
+    assert.equal(scope.value, 'chat');
+
+    const select = env.element('char_saver_lorebook_select');
+    assert.ok(select.innerHTML.includes('<option value="">(not set)</option>'));
+    assert.ok(select.innerHTML.includes('<option value="Test">Test</option>'));
+    assert.equal(select.value, 'Test');
+
+    select.value = '';
+    select.listeners.change();
+    assert.equal('characterSaverWorld' in env.context.chat_metadata, false);
+
+    select.value = 'Test';
+    select.listeners.change();
+    assert.equal(env.context.chat_metadata.characterSaverWorld, 'Test');
+
+    scope.value = 'character';
+    scope.listeners.change();
+    assert.equal(env.context.extension_settings.characterSaver.lorebookScope, 'character');
+    const characterSelect = env.element('char_saver_lorebook_select');
+    assert.equal(characterSelect.value, '');
+
+    characterSelect.value = 'Test';
+    characterSelect.listeners.change();
+    assert.equal(JSON.stringify(env.context.extension_settings.characterSaver.characterLorebooks), '{"Hero":"Test"}');
+});
+
+test('creating a lorebook from settings sanitizes the name and selects it', async () => {
+    const env = setup();
+    env.context.POPUP_TYPE = { CONFIRM: 1 };
+    const created = [];
+    env.context.createNewWorldInfo = async name => { created.push(name); env.context.world_names.push(name); };
+    let listed = 0;
+    env.context.updateWorldInfoList = () => { listed++; };
+
+    await vm.runInContext('renderSettings()', env.context);
+    const nameInput = env.element('char_saver_new_lorebook_name');
+    const scope = env.element('char_saver_lorebook_scope');
+    scope.value = 'chat';
+    scope.listeners.change();
+
+    nameInput.value = 'My: Fancy\nLorebook';
+    await nameInput.listeners.change();
+    assert.deepEqual(created, ['My Fancy Lorebook']);
+    assert.equal(env.context.chat_metadata.characterSaverWorld, 'My Fancy Lorebook');
+    assert.equal(nameInput.value, '');
+    assert.equal(listed, 1);
+
+    nameInput.value = 'Test';
+    await nameInput.listeners.change();
+    assert.equal(created.length, 1);
+    assert.equal(env.context.chat_metadata.characterSaverWorld, 'Test');
+
+    nameInput.value = ':::';
+    await nameInput.listeners.change();
+    assert.equal(created.length, 1);
+});
+
+test('unconfigured lorebook asks and stores the created book for the current scope', async () => {
+    const env = setup();
+    delete env.context.chat_metadata.characterSaverWorld;
+    env.context.POPUP_TYPE = { CONFIRM: 1 };
+    env.context.callGenericPopup = async () => true;
+    const created = [];
+    env.context.createNewWorldInfo = async name => { created.push(name); env.context.world_names.push(name); };
+
+    const original = wrap('<npc name="Alice">Creation</npc>');
+    env.context.chat.push({ mes: original });
+    await env.api.processMessage(0);
+
+    assert.equal(created.length, 1);
+    assert.ok(!created[0].includes(':'));
+    assert.ok(created[0].startsWith('Hero Chat Lorebook '));
+    assert.equal(env.context.chat_metadata.characterSaverWorld, created[0]);
+    assert.equal(Object.keys(env.world.entries).length, 0);
+    const newWorld = env.worlds[created[0]];
+    assert.equal(newWorld.entries[0].key[0], 'Alice');
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('character scope persists the lorebook across chats of the same character', async () => {
+    const first = setup({ lorebookScope: 'character', characterLorebooks: { Hero: 'Test' } });
+    first.context.chat.push({ mes: wrap('<npc name="Alice">Creation</npc>') });
+    await first.api.processMessage(0);
+    assert.equal(first.world.entries[0].key[0], 'Alice');
+
+    const second = setup({ lorebookScope: 'character', characterLorebooks: { Hero: 'Test' } });
+    assert.equal(second.api.getConfiguredLorebookName(), 'Test');
 });

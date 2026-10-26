@@ -3,6 +3,9 @@
 
 const MODULE_NAME = 'CharacterSaver';
 
+// Chat metadata key storing the lorebook selected for the current chat
+const CHAR_SAVER_WORLD_METADATA_KEY = 'characterSaverWorld';
+
 // Default settings
 const defaultSettings = {
     // Character creation settings
@@ -14,6 +17,10 @@ const defaultSettings = {
     updateEndDelimiter: 'update character end -->',
     separateUpdateEntries: false,
     updateEntryCounters: [],
+
+    // Lorebook settings
+    lorebookScope: 'chat',
+    characterLorebooks: {},
 };
 
 // Current settings (will be loaded from extension_settings)
@@ -53,7 +60,6 @@ import {
 } from '../../../../script.js';
 
 import {
-    METADATA_KEY,
     world_names,
     loadWorldInfo,
     createWorldInfoEntry,
@@ -131,6 +137,32 @@ async function renderSettings() {
 
             <hr class="sysHR">
 
+            <hr class="sysHR">
+
+            <div class="marginBot5">
+                <label>Lorebook</label>
+                <div class="marginBot5">
+                    <label for="char_saver_lorebook_scope">Lorebook Setting valid for</label>
+                    <select id="char_saver_lorebook_scope" class="text_pole">
+                        <option value="chat">This Chat</option>
+                        <option value="character">This Character</option>
+                    </select>
+                    <small>"This Chat": the lorebook setting applies to the current chat only. "This Character": the setting applies to all chats of the current character.</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_lorebook_select">Lorebook</label>
+                    <select id="char_saver_lorebook_select" class="text_pole"></select>
+                    <small>Select the lorebook where characters are saved. "(not set)" asks before creating a new lorebook when a character is introduced.</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_new_lorebook_name">Create New Lorebook</label>
+                    <input id="char_saver_new_lorebook_name" class="text_pole" type="text" placeholder="My Lorebook">
+                    <small>Creates a new lorebook with this name and selects it. Names must not contain ":".</small>
+                </div>
+            </div>
+
+            <hr class="sysHR">
+
             <div class="marginBot5">
                 <label>Character Creation</label>
                 <div class="marginBot5">
@@ -192,6 +224,38 @@ async function renderSettings() {
     const updateEndInput = document.getElementById('char_saver_update_end_delimiter');
     const separateUpdatesInput = document.getElementById('char_saver_separate_update_entries');
     const pausedForChatInput = document.getElementById('char_saver_paused_for_chat');
+    const lorebookScopeInput = document.getElementById('char_saver_lorebook_scope');
+    const lorebookSelectInput = document.getElementById('char_saver_lorebook_select');
+    const newLorebookNameInput = document.getElementById('char_saver_new_lorebook_name');
+
+    if (lorebookScopeInput) {
+        lorebookScopeInput.value = settings.lorebookScope === 'character' ? 'character' : 'chat';
+        lorebookScopeInput.addEventListener('change', () => {
+            settings.lorebookScope = lorebookScopeInput.value === 'character' ? 'character' : 'chat';
+            saveSettings();
+            refreshLorebookSelect(lorebookSelectInput);
+        });
+    }
+
+    if (lorebookSelectInput) {
+        refreshLorebookSelect(lorebookSelectInput);
+        lorebookSelectInput.addEventListener('change', () => {
+            const worldName = lorebookSelectInput.value || null;
+            setConfiguredLorebookName(worldName);
+            if (worldName) console.log(`[${MODULE_NAME}] Lorebook set to: '${worldName}'`);
+        });
+    }
+
+    if (newLorebookNameInput) {
+        newLorebookNameInput.value = '';
+        newLorebookNameInput.addEventListener('change', async () => {
+            const created = await createLorebookFromInput(newLorebookNameInput.value);
+            if (created) {
+                newLorebookNameInput.value = '';
+                refreshLorebookSelect(lorebookSelectInput);
+            }
+        });
+    }
 
     if (pausedForChatInput) {
         pausedForChatInput.checked = isPausedForChat();
@@ -306,6 +370,18 @@ eventSource.on(event_types.CHAT_CHANGED, async () => {
         await renderSettings();
     }
 });
+
+/**
+ * Escapes text for safe use in option values and labels
+ */
+function escapeHtml(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 /**
  * Escapes special regex characters
@@ -520,27 +596,119 @@ function parseUpdateBlock(block) {
     }
 }
 
+
 /**
- * Gets or creates the current chat's World Info name
+ * Builds a valid lorebook name. ":" is not allowed in lorebook names.
+ */
+function sanitizeWorldName(rawName) {
+    const sanitized = String(rawName || '').replace(/[\r\n\t:]/g, ' ').replace(/\s+/g, ' ').trim();
+    return sanitized || null;
+}
+
+/**
+ * Current character name used as the scope key for per-character settings.
+ */
+function getCharacterScopeKey() {
+    return name2 || '';
+}
+
+/**
+ * Returns the lorebook name configured for the current chat or character.
+ */
+function getConfiguredLorebookName() {
+    const scope = settings.lorebookScope === 'character' ? 'character' : 'chat';
+    const worldName = scope === 'character'
+        ? settings.characterLorebooks?.[getCharacterScopeKey()]
+        : chat_metadata?.[CHAR_SAVER_WORLD_METADATA_KEY];
+    return worldName || null;
+}
+
+/**
+ * Stores the lorebook name for the current chat or character.
+ */
+function setConfiguredLorebookName(worldName) {
+    const scope = settings.lorebookScope === 'character' ? 'character' : 'chat';
+    if (scope === 'character') {
+        const key = getCharacterScopeKey();
+        if (!key) return;
+        settings.characterLorebooks = { ...(settings.characterLorebooks || {}) };
+        if (worldName) settings.characterLorebooks[key] = worldName;
+        else delete settings.characterLorebooks[key];
+        saveSettings();
+    } else {
+        if (!chat_metadata) return;
+        if (worldName) chat_metadata[CHAR_SAVER_WORLD_METADATA_KEY] = worldName;
+        else delete chat_metadata[CHAR_SAVER_WORLD_METADATA_KEY];
+        saveMetadata();
+    }
+}
+
+/**
+ * Creates a new lorebook from the settings input and selects it for the current scope.
+ */
+async function createLorebookFromInput(rawName) {
+    const worldName = sanitizeWorldName(rawName);
+    if (!worldName) {
+        if (typeof toastr !== 'undefined') {
+            toastr.warning('Please enter a valid lorebook name. ":" is not allowed.', `${MODULE_NAME}`);
+        }
+        return null;
+    }
+    if (world_names.includes(worldName)) {
+        if (typeof toastr !== 'undefined') {
+            toastr.warning(`A lorebook named "${worldName}" already exists.`, `${MODULE_NAME}`);
+        }
+        setConfiguredLorebookName(worldName);
+        return worldName;
+    }
+    try {
+        await createNewWorldInfo(worldName, { interactive: false });
+        if (!world_names.includes(worldName)) {
+            world_names.push(worldName);
+        }
+        setConfiguredLorebookName(worldName);
+        updateWorldInfoList();
+        if (typeof toastr !== 'undefined') {
+            toastr.success(`Created lorebook "${worldName}"`, `${MODULE_NAME}`);
+        }
+        return worldName;
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Failed to create lorebook:`, error);
+        if (typeof toastr !== 'undefined') {
+            toastr.error(`Failed to create lorebook "${worldName}"`, `${MODULE_NAME}`);
+        }
+        return null;
+    }
+}
+
+/**
+ * Populates the lorebook dropdown with "(not set)" plus all known lorebooks.
+ */
+function refreshLorebookSelect(select) {
+    if (!select) return;
+    const current = getConfiguredLorebookName();
+    const options = ['<option value="">(not set)</option>']
+        .concat(world_names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`));
+    select.innerHTML = options.join('');
+    select.value = current && world_names.includes(current) ? current : '';
+}
+
+/**
+ * Gets or creates the lorebook used for saving characters.
  */
 async function getOrCreateWorldInfoName(processing = createProcessingContext()) {
     if (!processing.canProcess()) return null;
-    let worldName = chat_metadata[METADATA_KEY];
 
-    console.log(`[${MODULE_NAME}] Detected World Info name: '${worldName}'`);
-    console.log(`[${MODULE_NAME}] Available World Info books:`, world_names);
-    console.log(`[${MODULE_NAME}] Full chat_metadata:`, chat_metadata);
-
-    // Check if World Info exists and is valid
-    if (worldName && world_names.includes(worldName)) {
-        return worldName;
+    const configuredWorldName = getConfiguredLorebookName();
+    if (configuredWorldName && world_names.includes(configuredWorldName)) {
+        return configuredWorldName;
     }
 
-    // No World Info exists - ask user if they want to create one
-    console.log(`[${MODULE_NAME}] No World Info found. Asking user...`);
+    // No lorebook configured - ask user if they want to create one
+    console.log(`[${MODULE_NAME}] No lorebook configured. Asking user...`);
 
     const confirm = await callGenericPopup(
-        'No lorebook is attached to this chat. Would you like to create one to save the character?',
+        'No lorebook is set for this chat/character. Would you like to create one to save the character?',
         POPUP_TYPE.CONFIRM,
         '',
         { okButton: 'Create Lorebook' }
@@ -553,60 +721,33 @@ async function getOrCreateWorldInfoName(processing = createProcessingContext()) 
         return null;
     }
 
-    // Generate a name for the new World Info using the character name
+    // Generate a name for the new lorebook using the character name
     const characterName = name2 || 'Chat';
     // Format: YYYY-MM-DD HH:MM (example: 2026-06-02 14:30)
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
     const timeStr = now.toTimeString().slice(0, 5); // HH:MM
-    const newWorldName = `${characterName} Chat Lorebook ${dateStr} ${timeStr}`;
+    const newWorldName = sanitizeWorldName(`${characterName} Chat Lorebook ${dateStr} ${timeStr}`);
+    if (!newWorldName) {
+        console.error(`[${MODULE_NAME}] Could not build a valid lorebook name`);
+        return null;
+    }
 
     try {
-        // Create the new World Info (this also calls updateWorldInfoList internally)
+        // Create the new lorebook (this also calls updateWorldInfoList internally)
         await createNewWorldInfo(newWorldName, { interactive: false });
 
         if (!processing.canProcess()) return null;
 
         console.log(`[${MODULE_NAME}] Created new World Info: '${newWorldName}'`);
 
-        // Update the chat metadata to use the new World Info
-        chat_metadata[METADATA_KEY] = newWorldName;
-
-        console.log(`[${MODULE_NAME}] Set chat_metadata[${METADATA_KEY}] = '${newWorldName}'`);
-
-        // Save the metadata
-        await saveMetadata();
-
-        if (!processing.canProcess()) return null;
-
-        console.log(`[${MODULE_NAME}] Metadata saved. Current chat_metadata[METADATA_KEY]:`, chat_metadata[METADATA_KEY]);
-
-        // Wait a bit for the UI to update, then check if the lorebook is in the list
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        if (!processing.canProcess()) return null;
-
-        // Check if the lorebook is in world_names; if not, manually add it
-        let hasWorldInfo = world_names.includes(newWorldName);
-        if (!hasWorldInfo) {
+        if (!world_names.includes(newWorldName)) {
             console.warn(`[${MODULE_NAME}] Lorebook not found in world_names, manually adding it`);
             world_names.push(newWorldName);
-            hasWorldInfo = true;
         }
 
-        // Update the UI to show that a lorebook is attached
-        const chatLorebookButton = document.querySelector('.chat_lorebook_button');
-        if (chatLorebookButton) {
-            if (hasWorldInfo) {
-                chatLorebookButton.classList.add('world_set');
-                console.log(`[${MODULE_NAME}] Updated UI button state (world_set=true)`);
-            } else {
-                console.warn(`[${MODULE_NAME}] Lorebook still not found in world_names after manual add`);
-                console.log(`[${MODULE_NAME}] Current world_names:`, world_names);
-            }
-        } else {
-            console.warn(`[${MODULE_NAME}] Chat lorebook button not found`);
-        }
+        // Persist the selection for the current chat or character
+        setConfiguredLorebookName(newWorldName);
 
         return newWorldName;
     } catch (error) {
@@ -614,6 +755,7 @@ async function getOrCreateWorldInfoName(processing = createProcessingContext()) 
         return null;
     }
 }
+
 
 /**
  * Finds an existing update entry for a character by comment
@@ -1040,6 +1182,11 @@ if (typeof globalThis !== 'undefined') {
         findUpdateEntry,
         isPausedForChat,
         setPausedForChat,
+        sanitizeWorldName,
+        getConfiguredLorebookName,
+        setConfiguredLorebookName,
+        createLorebookFromInput,
+        refreshLorebookSelect,
         createOrUpdateLorebookEntry,
         processUpdates,
     };
