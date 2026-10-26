@@ -6,6 +6,28 @@
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
+                <label class="checkbox_label" for="char_saver_paused">
+                    <input id="char_saver_paused" type="checkbox">
+                    <span>Pause</span>
+                </label>
+            </div>
+
+            <div class="marginBot5">
+                <label for="char_saver_lorebook_scope">Lorebook scope</label>
+                <select id="char_saver_lorebook_scope" class="text_pole">
+                    <option value="chat">Chat</option>
+                    <option value="character">Character</option>
+                </select>
+                <label for="char_saver_lorebook">Lorebook</label>
+                <select id="char_saver_lorebook" class="text_pole"></select>
+                <button id="char_saver_create_lorebook" class="menu_button" type="button">Create Lorebook</button>
+                <button id="char_saver_refresh_lorebooks" class="menu_button" type="button">Refresh Lorebooks</button>
+                <small id="char_saver_lorebook_status" role="status"></small>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
                 <label>Character Creation</label>
                 <div class="marginBot5">
                     <label for="char_saver_start_delimiter">Start Delimiter</label>
@@ -47,7 +69,7 @@
             <div class="marginBot5">
                 <label>Info</label>
                 <p class="margin0">
-                    Character Saver automatically creates chat lorebook entries for characters introduced by the AI:
+                    Character Saver saves characters introduced by the AI to the selected lorebook:
                 </p>
                 <ul class="margin0">
                     <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>

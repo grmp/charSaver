@@ -1,10 +1,10 @@
 # Character Saver - SillyTavern Extension
 
-A SillyTavern extension that automatically creates chat lorebook entries when the AI introduces new characters or updates existing ones.
+A SillyTavern extension that saves AI character introductions and updates to a lorebook selected for the current chat or character.
 
 ## Features
 
-- **Character Creation**: Automatically detects character introductions in AI responses and creates chat-bound lorebook entries
+- **Character Creation**: Automatically detects character introductions in AI responses and creates entries in the selected lorebook
 - **All NPC**: Appends each new character's XML attributes to a shared "All NPC" lorebook entry, one character per line
 - **Character Updates**: Detects character progression/updates and either appends to "Update for [Name]" or creates separate numbered entries
 - Removes character introduction and update blocks from the chat after processing
@@ -14,7 +14,8 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
   - `Name: John Doe`
   - `**John Doe**`
   - `<npc name="John Doe">...</npc>` and `<npc_update name="John Doe">...</npc_update>` inside the configured delimiters
-- Auto-creates a lorebook if none exists
+- Select an existing lorebook or create one in Settings, directly below **Pause**
+- Save independent lorebook selections for a chat or a character
 - Shows toast notifications when characters are added or updated
 
 ## Installation
@@ -27,7 +28,9 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
 
 ## Setup
 
-For the extension to work, you need to instruct the AI to use the special delimiters when introducing or updating characters.
+Open a chat, then go to **Extensions → Character Saver**. Below **Pause**, choose **Chat** or **Character** scope and select a lorebook, or click **Create Lorebook**. Character creation, **All NPC**, and updates all use this selected book. The lorebook already bound to the chat is not used automatically or changed.
+
+Then instruct the AI to use the special delimiters when introducing or updating characters.
 
 ### Adding to Your System Prompt
 
@@ -146,7 +149,7 @@ The complete content inside the delimiters is retained for XML blocks, including
 opening and closing tags, attributes, and internal formatting. Only the surrounding
 delimiters and outer whitespace are removed. Existing updates are appended as before.
 
-Each new character is also appended to the chat lorebook entry **All NPC**, which
+Each new character is also appended to the selected lorebook's **All NPC** entry, which
 is created automatically if missing. New entries use Constant activation with
 Vectorized disabled and order 98. All opening-tag attributes are included in their
 original order as comma-separated `attribute=value` pairs, without quotes.
@@ -195,6 +198,11 @@ Regression tests can be run with `node --test test/*.test.mjs`.
 
 The extension settings can be found in **Extensions → Character Saver**:
 
+- **Pause**: Stops processing new messages until unchecked. Skipped messages are not automatically replayed.
+- **Lorebook scope**: **Chat** keeps a selection only for the current chat. **Character** shares a selection across chats with the same character, identified by its avatar filename. New chats inherit the character selection when one exists; explicitly choosing **Chat** keeps that chat independent, even with an empty selection. Switching scope preserves both selections. Group chats support **Chat** scope only.
+- **Lorebook**: The explicit destination for character entries, **All NPC**, and both update modes. Selection and scope are restored when switching chats or characters. There is no global lorebook selection.
+- **Create Lorebook**: Asks for a name and selects the new book for the active scope after creation succeeds. The suggested name is `{Character Name} Lorebook YYYY-MM-DD_HH-mm`, using local date and time. All colons in the suggested name, including those in the character name, are replaced with hyphens. Duplicate suggestions receive a numeric suffix; entering an existing name does not overwrite that book.
+- **Refresh Lorebooks**: Reloads the available books after external creation, deletion, or renaming. An unavailable selection stays visible until explicitly replaced.
 - **Character Creation Start Delimiter**: Marks the beginning of a character introduction (default: `<!-- new character start`)
 - **Character Creation End Delimiter**: Marks the end of a character introduction (default: `new character end -->`)
 - **Character Update Start Delimiter**: Marks the beginning of a character update (default: `<!-- update character start`)
@@ -209,9 +217,13 @@ The extension settings can be found in **Extensions → Character Saver**:
 - Check that your system prompt includes the delimiter instructions
 - Open the browser console (F12) and check for errors prefixed with [CharacterSaver]
 
-### No lorebook active warning
+### No lorebook selected or selection unavailable
 
-The extension will automatically create a lorebook for your chat if one doesn't exist. The new lorebook will be named "{Character Name} Chat Lorebook YYYY-MM-DD HH:MM".
+Open **Extensions → Character Saver** and select or create a lorebook below **Pause**. Existing installations must make an explicit selection once; the bound chat lorebook is not adopted automatically. If the selected book was renamed or deleted, refresh the list and choose an available book. Without a valid selection, nothing is written and delimiter blocks remain in the message for retry. A lorebook is created only through **Create Lorebook**.
+
+Selecting a destination here does not activate it for prompt injection in SillyTavern. Configure World Info activation separately if the AI should use the saved entries.
+
+Chat selections are saved in chat metadata. Character selections are stored in the extension settings under the character's avatar filename; preserve those settings when moving installations. Changing that filename requires choosing the character's lorebook again.
 
 ### Characters not being detected
 

@@ -7,26 +7,36 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
     .replace(/^import\s*\{[\s\S]*?\}\s*from\s*'[^']+';\s*/gm, '');
 
-function setup(customSettings = {}, initialWorlds = {}) {
+function setup(customSettings = {}, initialWorlds = {}, chatSettings = { lorebookScope: 'chat', selectedLorebook: 'Test' }) {
     const world = { entries: {} };
     const worlds = { Test: world, ...initialWorlds };
-    const calls = { save: 0, chat: 0, settings: 0 };
+    const calls = { save: 0, chat: 0, settings: 0, metadata: 0, create: [], popup: [], notifications: [], refresh: 0 };
     const elements = new Map();
+    const handlers = {};
+    const host = { chatId: 'chat-1', characterId: 0, characters: [{ avatar: 'alice.png' }, { avatar: 'bob.png' }] };
+    const makeElement = () => ({ value: '', checked: false, disabled: false, children: [], listeners: {},
+        addEventListener(type, handler) { this.listeners[type] = handler; },
+        appendChild(child) { this.children.push(child); },
+        replaceChildren() { this.children = []; },
+        querySelector(selector) { return element(selector); },
+    });
     const element = id => {
-        if (!elements.has(id)) elements.set(id, { value: '', checked: false, listeners: {},
-            addEventListener(type, handler) { this.listeners[type] = handler; } });
+        if (!elements.has(id)) elements.set(id, makeElement());
         return elements.get(id);
     };
     const context = vm.createContext({
         structuredClone,
-        document: { querySelector: element, getElementById: element },
+        document: { querySelector: element, getElementById: element, createElement: makeElement },
+        getContext: () => host,
+        name2: 'Alice',
+        saveMetadata: async () => { calls.metadata++; },
         saveSettingsDebounced() { calls.settings++; },
         console: { log() {}, warn() {}, debug() {}, error() {} },
         extension_settings: { characterSaver: customSettings },
-        eventSource: { on() {} },
+        eventSource: { on(type, handler) { handlers[type] = handler; } },
         event_types: { APP_READY: 'ready', CHAT_CHANGED: 'chat', MESSAGE_RECEIVED: 'message' },
-        chat: [], chat_metadata: { world: 'Test' }, METADATA_KEY: 'world',
-        world_names: ['Test'],
+        chat: [], chat_metadata: { world: 'Test', characterSaver: chatSettings },
+        world_names: Object.keys(worlds),
         loadWorldInfo: async name => worlds[name] || (worlds[name] = { entries: {} }),
         createWorldInfoEntry: (name, data) => {
             const uid = Math.max(-1, ...Object.keys(data.entries).map(Number)) + 1;
@@ -35,10 +45,22 @@ function setup(customSettings = {}, initialWorlds = {}) {
         saveWorldInfo: async (name, data) => { calls.save++; worlds[name].entries = structuredClone(data.entries); },
         updateMessageBlock() {},
         saveChatConditional: async () => { calls.chat++; },
-        updateWorldInfoList() {},
+        updateWorldInfoList() {
+            calls.refresh++;
+            context.world_names.splice(0, context.world_names.length, ...Object.keys(worlds));
+        },
+        createNewWorldInfo: async (name, options) => {
+            calls.create.push({ name, options });
+            worlds[name] = { entries: {} };
+            return true;
+        },
+        callGenericPopup: async (...args) => { calls.popup.push(args); return args[2]; },
+        POPUP_TYPE: { INPUT: 'input' },
+        toastr: Object.fromEntries(['warning', 'error', 'info', 'success'].map(level =>
+            [level, message => { calls.notifications.push({ level, message }); }])),
     });
     vm.runInContext(source, context);
-    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element };
+    return { api: context.CharacterSaver, context, world: worlds.Test, worlds, calls, element, host, handlers };
 }
 
 function wrap(content, update = false) {
@@ -443,4 +465,323 @@ test('outer delimiters determine creation or update regardless of the NPC tag', 
     await env.api.processUpdates(1);
     assert.ok(Object.values(env.world.entries).some(e => e.comment === 'Update Alice #1'));
     assert.equal(Object.values(env.world.entries).filter(e => e.comment === 'Character: Alice').length, 1);
+});
+
+async function chooseScope(env, value) {
+    const input = env.element('char_saver_lorebook_scope');
+    input.value = value;
+    await input.listeners.change();
+}
+
+async function chooseLorebook(env, value) {
+    const input = env.element('char_saver_lorebook');
+    input.value = value;
+    await input.listeners.change({ target: input });
+}
+
+test('lorebook controls follow Pause and the HTML template matches the rendered UI', async () => {
+    const env = setup();
+    await vm.runInContext('renderSettings()', env.context);
+    const html = env.element('#char-saver-settings').innerHTML;
+    assert.equal(html.trim(), readFileSync(new URL('../index.html', import.meta.url), 'utf8').trim());
+    assert.ok(html.indexOf('id="char_saver_paused"') < html.indexOf('id="char_saver_lorebook_scope"'));
+    assert.equal(env.element('char_saver_lorebook').value, 'Test');
+});
+
+test('chat selections persist independently and never change the bound lorebook', async () => {
+    const env = setup({}, { Other: { entries: {} } });
+    await vm.runInContext('renderSettings()', env.context);
+    await chooseLorebook(env, 'Other');
+    const firstMetadata = structuredClone(env.context.chat_metadata);
+    assert.equal(firstMetadata.characterSaver.selectedLorebook, 'Other');
+    assert.equal(firstMetadata.world, 'Test');
+    assert.equal(env.calls.metadata, 1);
+    assert.equal(env.calls.settings, 0);
+    env.host.chatId = 'chat-2';
+    env.context.chat_metadata = { world: 'Test' };
+    await env.handlers.chat();
+    assert.equal(env.element('char_saver_lorebook').value, '');
+    assert.equal(env.api.getSelectedWorldInfoName(), null);
+    await chooseLorebook(env, 'Test');
+    env.host.chatId = 'chat-1';
+    env.context.chat_metadata = firstMetadata;
+    await env.handlers.chat();
+    assert.equal(env.element('char_saver_lorebook').value, 'Other');
+    const reloaded = setup({}, { Other: { entries: {} } }, firstMetadata.characterSaver);
+    assert.equal(reloaded.api.getSelectedWorldInfoName(), 'Other');
+});
+
+test('character selection follows its avatar across chats, reloads, and character reordering', async () => {
+    const env = setup({}, { Other: { entries: {} } });
+    await vm.runInContext('renderSettings()', env.context);
+    await chooseScope(env, 'character');
+    assert.equal(env.api.getSelectedWorldInfoName(), null);
+    await chooseLorebook(env, 'Other');
+    assert.equal(env.context.chat_metadata.characterSaver.selectedLorebook, 'Test');
+    assert.equal(env.context.chat_metadata.world, 'Test');
+    assert.equal(env.calls.settings, 1);
+    env.host.chatId = 'new-chat';
+    env.context.chat_metadata = {};
+    await env.handlers.chat();
+    assert.equal(env.element('char_saver_lorebook_scope').value, 'character');
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Other');
+    env.host.characterId = 1;
+    assert.equal(env.api.getSelectedWorldInfoName(), null);
+    env.host.characters.reverse();
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Other');
+    const savedSettings = structuredClone(env.context.extension_settings.characterSaver);
+    const reloaded = setup(savedSettings, { Other: { entries: {} } }, undefined);
+    delete reloaded.context.chat_metadata.characterSaver;
+    assert.equal(reloaded.api.getSelectedWorldInfoName(), 'Other');
+});
+
+test('explicit Chat scope keeps its selection when a character default exists, including an empty selection', async () => {
+    const env = setup({ characterLorebooks: [{ avatar: 'alice.png', worldName: 'Other' }] }, { Other: { entries: {} } });
+    await vm.runInContext('renderSettings()', env.context);
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Test');
+    await chooseScope(env, 'character');
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Other');
+    await chooseScope(env, 'chat');
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Test');
+    await chooseLorebook(env, '');
+    assert.equal(env.api.getSelectedWorldInfoName(), null);
+});
+
+test('missing selection ignores global and bound lorebooks, keeps all blocks and does not create a book', async () => {
+    const env = setup({ selectedLorebook: 'Test' }, {}, {});
+    const text = wrap('Name: Alice\nNew.') + wrap('Name: Alice\nUpdate.', true);
+    env.context.chat.push({ mes: text });
+    await env.handlers.message(0);
+    await env.api.processMessage(0);
+    await env.api.processUpdates(0);
+    assert.equal(env.context.chat[0].mes, text);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.calls.chat, 0);
+    assert.equal(env.calls.create.length, 0);
+    assert.equal(env.calls.popup.length, 0);
+    assert.ok(env.calls.notifications.every(item => item.message.includes('below Pause')));
+});
+
+test('ordinary messages without delimiter blocks do not warn about missing selection', async () => {
+    const env = setup({}, {}, {});
+    env.context.chat.push({ mes: 'Hello.' });
+    await env.handlers.message(0);
+    await env.api.processMessage(0);
+    await env.api.processUpdates(0);
+    assert.equal(env.calls.notifications.length, 0);
+});
+
+test('new characters, All NPC and updates use the selected book exclusively', async () => {
+    const env = setup({}, { Other: { entries: {} } }, { lorebookScope: 'chat', selectedLorebook: 'Other' });
+    env.context.chat.push({ mes: wrap('Name: Alice\nNew.') + wrap('Name: Alice\nUpdate.', true) });
+    await env.handlers.message(0);
+    assert.deepEqual(Object.values(env.worlds.Other.entries).map(entry => entry.comment),
+        ['Character: Alice', 'All NPC', 'Update for Alice']);
+    assert.equal(Object.keys(env.world.entries).length, 0);
+    assert.equal(env.context.chat[0].mes, '');
+    assert.equal(env.context.chat_metadata.world, 'Test');
+});
+
+test('a selection change during a write does not split a message across lorebooks', async () => {
+    const env = setup({}, { Other: { entries: {} } });
+    const save = env.context.saveWorldInfo;
+    env.context.saveWorldInfo = async (...args) => {
+        await save(...args);
+        env.context.chat_metadata.characterSaver.selectedLorebook = 'Other';
+    };
+    env.context.chat.push({ mes: wrap('Name: Alice\nNew.') + wrap('Name: Alice\nUpdate.', true) });
+    await env.handlers.message(0);
+    assert.deepEqual(Object.values(env.world.entries).map(entry => entry.comment),
+        ['Character: Alice', 'All NPC', 'Update for Alice']);
+    assert.equal(Object.keys(env.worlds.Other.entries).length, 0);
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Other');
+});
+
+test('removed books stay visibly unavailable with no fallback; refreshing offers renamed books', async () => {
+    const env = setup({}, { Other: { entries: {} } }, { selectedLorebook: 'Other' });
+    await vm.runInContext('renderSettings()', env.context);
+    delete env.worlds.Other;
+    env.worlds.Renamed = { entries: {} };
+    await env.element('char_saver_refresh_lorebooks').listeners.click();
+    const options = env.element('char_saver_lorebook').children;
+    assert.equal(options.find(option => option.value === 'Other').disabled, true);
+    assert.ok(options.some(option => option.value === 'Renamed'));
+    assert.equal(env.context.chat_metadata.characterSaver.selectedLorebook, 'Other');
+    const text = wrap('Name: Alice\nNew.') + wrap('Name: Alice\nUpdate.', true);
+    env.context.chat.push({ mes: text });
+    await env.handlers.message(0);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.context.chat[0].mes, text);
+    await chooseLorebook(env, 'Renamed');
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Renamed');
+});
+
+test('lorebook names are rendered as text in options', async () => {
+    const name = '<img src=x onerror=alert(1)> & "quoted"';
+    const env = setup({}, { [name]: { entries: {} } });
+    await vm.runInContext('renderSettings()', env.context);
+    const option = env.element('char_saver_lorebook').children.find(option => option.value === name);
+    assert.equal(option.textContent, name);
+});
+
+for (const scope of ['chat', 'character']) {
+    test(`creation selects the verified new book for ${scope} without binding it to the chat`, async () => {
+        const env = setup();
+        env.context.name2 = 'Alice: The: Brave';
+        await vm.runInContext('renderSettings()', env.context);
+        if (scope === 'character') await chooseScope(env, scope);
+        await env.element('char_saver_create_lorebook').listeners.click();
+        assert.equal(env.calls.create.length, 1);
+        const name = env.calls.create[0].name;
+        assert.match(name, /^Alice- The- Brave Lorebook \d{4}-\d{2}-\d{2}_\d{2}-\d{2}$/);
+        assert.equal(name.includes(':'), false);
+        assert.equal(env.calls.create[0].options.interactive, false);
+        assert.equal(env.api.getSelectedWorldInfoName(), name);
+        assert.equal(env.context.chat_metadata.world, 'Test');
+        assert.equal(env.element('char_saver_lorebook').value, name);
+        assert.ok(env.worlds[name]);
+    });
+}
+
+test('generated names avoid collisions and manual duplicate names never overwrite books', async () => {
+    const env = setup();
+    const base = vm.runInContext('suggestedLorebookName()', env.context);
+    env.worlds[base] = { entries: { 0: { content: 'keep' } } };
+    env.context.world_names.push(base);
+    await vm.runInContext('renderSettings()', env.context);
+    env.context.callGenericPopup = async (label, type, suggested) => {
+        assert.equal(suggested, `${base} (2)`);
+        return base;
+    };
+    await env.element('char_saver_create_lorebook').listeners.click();
+    assert.equal(env.calls.create.length, 0);
+    assert.equal(env.worlds[base].entries[0].content, 'keep');
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Test');
+});
+
+for (const answer of [null, false, '', '   ']) {
+    test(`cancelled or blank creation keeps selection: ${JSON.stringify(answer)}`, async () => {
+        const env = setup();
+        await vm.runInContext('renderSettings()', env.context);
+        env.context.callGenericPopup = async () => answer;
+        await env.element('char_saver_create_lorebook').listeners.click();
+        assert.equal(env.calls.create.length, 0);
+        assert.equal(env.api.getSelectedWorldInfoName(), 'Test');
+        assert.equal(env.element('char_saver_create_lorebook').disabled, false);
+    });
+}
+
+for (const failure of ['throws', 'false', 'missing from list', 'cannot load']) {
+    test(`creation failure ${failure} preserves the previous selection`, async () => {
+        const env = setup();
+        await vm.runInContext('renderSettings()', env.context);
+        if (failure === 'throws') env.context.createNewWorldInfo = async () => { throw new Error('create'); };
+        if (failure === 'false') env.context.createNewWorldInfo = async () => false;
+        if (failure === 'missing from list') env.context.createNewWorldInfo = async () => true;
+        if (failure === 'cannot load') env.context.loadWorldInfo = async () => null;
+        await env.element('char_saver_create_lorebook').listeners.click();
+        assert.equal(env.api.getSelectedWorldInfoName(), 'Test');
+        assert.equal(env.calls.metadata, 0);
+        assert.equal(env.calls.settings, 0);
+        assert.ok(env.calls.notifications.some(item => item.level === 'error'));
+    });
+}
+
+test('switching chats while naming a book cancels creation and prevents duplicate clicks', async () => {
+    const env = setup();
+    await vm.runInContext('renderSettings()', env.context);
+    let finish;
+    env.context.callGenericPopup = () => new Promise(resolve => { finish = resolve; });
+    const pending = env.element('char_saver_create_lorebook').listeners.click();
+    await env.element('char_saver_create_lorebook').listeners.click();
+    assert.equal(env.element('char_saver_create_lorebook').disabled, true);
+    env.host.chatId = 'chat-2';
+    env.context.chat_metadata = {};
+    finish('New book');
+    await pending;
+    assert.equal(env.calls.create.length, 0);
+    assert.equal(env.calls.metadata, 0);
+    assert.equal(env.api.getSelectedWorldInfoName(), null);
+});
+
+test('a chat change during creation never assigns the created book to the new chat', async () => {
+    const env = setup();
+    await vm.runInContext('renderSettings()', env.context);
+    const create = env.context.createNewWorldInfo;
+    env.context.createNewWorldInfo = async (...args) => {
+        await create(...args);
+        env.host.chatId = 'chat-2';
+        env.context.chat_metadata = {};
+        return true;
+    };
+    await env.element('char_saver_create_lorebook').listeners.click();
+    assert.equal(env.calls.create.length, 1);
+    assert.equal(env.calls.metadata, 0);
+    assert.equal(env.api.getSelectedWorldInfoName(), null);
+    assert.ok(env.calls.notifications.some(item => item.level === 'info'));
+});
+
+test('group chats offer Chat scope only, and no-chat controls cannot create or save a selection', async () => {
+    const env = setup();
+    env.host.groupId = 'group-1';
+    await vm.runInContext('renderSettings()', env.context);
+    assert.equal(env.element('option[value="character"]').disabled, true);
+    await chooseScope(env, 'character');
+    assert.equal(env.context.chat_metadata.characterSaver.lorebookScope, 'chat');
+    env.host.chatId = undefined;
+    await env.handlers.chat();
+    assert.equal(env.element('char_saver_lorebook').disabled, true);
+    assert.equal(env.element('char_saver_create_lorebook').disabled, true);
+    await env.element('char_saver_create_lorebook').listeners.click();
+    await chooseLorebook(env, 'Test');
+    assert.equal(env.calls.create.length, 0);
+    assert.equal(env.calls.metadata, 0);
+});
+
+test('Pause persists and prevents both processing paths from saving or removing blocks', async () => {
+    const env = setup();
+    await vm.runInContext('renderSettings()', env.context);
+    const checkbox = env.element('char_saver_paused');
+    checkbox.checked = true;
+    checkbox.listeners.change();
+    const text = wrap('Name: Alice\nNew.') + wrap('Name: Alice\nUpdate.', true);
+    env.context.chat.push({ mes: text });
+    await env.handlers.message(0);
+    await env.api.processMessage(0);
+    await env.api.processUpdates(0);
+    assert.equal(env.calls.save, 0);
+    assert.equal(env.context.chat[0].mes, text);
+    const reloaded = setup(structuredClone(env.context.extension_settings.characterSaver));
+    await vm.runInContext('renderSettings()', reloaded.context);
+    assert.equal(reloaded.element('char_saver_paused').checked, true);
+    checkbox.checked = false;
+    checkbox.listeners.change();
+    await env.handlers.message(0);
+    assert.equal(env.calls.save, 2);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('failed metadata saves restore the previous scope and selection in the UI', async () => {
+    const env = setup({}, { Other: { entries: {} } });
+    await vm.runInContext('renderSettings()', env.context);
+    env.context.saveMetadata = async () => { throw new Error('metadata'); };
+    await chooseScope(env, 'character');
+    assert.equal(env.element('char_saver_lorebook_scope').value, 'chat');
+    await chooseLorebook(env, 'Other');
+    assert.equal(env.element('char_saver_lorebook').value, 'Test');
+    await env.element('char_saver_create_lorebook').listeners.click();
+    assert.equal(env.calls.create.length, 1);
+    assert.equal(env.api.getSelectedWorldInfoName(), 'Test');
+    assert.equal(env.element('char_saver_lorebook').value, 'Test');
+    assert.equal(env.context.chat_metadata.world, 'Test');
+});
+
+test('processing uses the character selection when a different book is bound to the chat', async () => {
+    const env = setup({ characterLorebooks: [{ avatar: 'alice.png', worldName: 'Other' }] },
+        { Other: { entries: {} } }, { lorebookScope: 'character', selectedLorebook: 'Test' });
+    env.context.chat.push({ mes: wrap('Name: Alice\nNew.') + wrap('Name: Alice\nUpdate.', true) });
+    await env.handlers.message(0);
+    assert.deepEqual(Object.values(env.worlds.Other.entries).map(entry => entry.comment),
+        ['Character: Alice', 'All NPC', 'Update for Alice']);
+    assert.equal(Object.keys(env.world.entries).length, 0);
 });

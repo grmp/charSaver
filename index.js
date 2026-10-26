@@ -1,10 +1,12 @@
 // Character Saver Extension for SillyTavern
-// Automatically creates chat lorebook entries for characters introduced by the AI
+// Saves characters introduced by the AI to an explicitly selected lorebook.
 
 const MODULE_NAME = 'CharacterSaver';
 
 // Default settings
 const defaultSettings = {
+    paused: false,
+    characterLorebooks: [],
     // Character creation settings
     startDelimiter: '<!-- new character start',
     endDelimiter: 'new character end -->',
@@ -53,7 +55,6 @@ import {
 } from '../../../../script.js';
 
 import {
-    METADATA_KEY,
     world_names,
     loadWorldInfo,
     createWorldInfoEntry,
@@ -69,6 +70,7 @@ import {
 
 import {
     extension_settings,
+    getContext,
 } from '../../../../scripts/extensions.js';
 
 import {
@@ -122,6 +124,28 @@ async function renderSettings() {
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
+                <label class="checkbox_label" for="char_saver_paused">
+                    <input id="char_saver_paused" type="checkbox">
+                    <span>Pause</span>
+                </label>
+            </div>
+
+            <div class="marginBot5">
+                <label for="char_saver_lorebook_scope">Lorebook scope</label>
+                <select id="char_saver_lorebook_scope" class="text_pole">
+                    <option value="chat">Chat</option>
+                    <option value="character">Character</option>
+                </select>
+                <label for="char_saver_lorebook">Lorebook</label>
+                <select id="char_saver_lorebook" class="text_pole"></select>
+                <button id="char_saver_create_lorebook" class="menu_button" type="button">Create Lorebook</button>
+                <button id="char_saver_refresh_lorebooks" class="menu_button" type="button">Refresh Lorebooks</button>
+                <small id="char_saver_lorebook_status" role="status"></small>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
                 <label>Character Creation</label>
                 <div class="marginBot5">
                     <label for="char_saver_start_delimiter">Start Delimiter</label>
@@ -163,7 +187,7 @@ async function renderSettings() {
             <div class="marginBot5">
                 <label>Info</label>
                 <p class="margin0">
-                    Character Saver automatically creates chat lorebook entries for characters introduced by the AI:
+                    Character Saver saves characters introduced by the AI to the selected lorebook:
                 </p>
                 <ul class="margin0">
                     <li><b>Character Creation:</b> Extracts the character name and description, creates a new lorebook entry</li>
@@ -174,6 +198,53 @@ async function renderSettings() {
         </div>
     </div>
 </div>`;
+
+    const pauseInput = document.getElementById('char_saver_paused');
+    pauseInput.checked = settings.paused === true;
+    pauseInput.addEventListener('change', () => {
+        settings.paused = pauseInput.checked;
+        saveSettings();
+    });
+
+    const scopeInput = document.getElementById('char_saver_lorebook_scope');
+    scopeInput.addEventListener('change', async () => {
+        const target = getLorebookTarget();
+        if (!target.chatId || (scopeInput.value === 'character' && !target.avatar)) return;
+        const previous = chat_metadata.characterSaver;
+        const next = { ...previous, lorebookScope: scopeInput.value };
+        chat_metadata.characterSaver = next;
+        try {
+            await saveMetadata();
+        } catch (error) {
+            if (target.metadata.characterSaver === next) target.metadata.characterSaver = previous;
+            console.error(`[${MODULE_NAME}] Failed to save lorebook scope:`, error);
+            notifyLorebook('Could not save the lorebook scope.', 'error');
+        } finally {
+            renderLorebookControls();
+        }
+    });
+
+    document.getElementById('char_saver_lorebook').addEventListener('change', async event => {
+        try {
+            await saveLorebookSelection(getLorebookTarget(), event.target.value);
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to save lorebook selection:`, error);
+            notifyLorebook('Could not save the lorebook selection.', 'error');
+        } finally {
+            renderLorebookControls();
+        }
+    });
+    document.getElementById('char_saver_create_lorebook').addEventListener('click', createSelectedLorebook);
+    document.getElementById('char_saver_refresh_lorebooks').addEventListener('click', async () => {
+        try {
+            await updateWorldInfoList();
+            renderLorebookControls();
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to refresh lorebooks:`, error);
+            notifyLorebook('Could not refresh lorebooks.', 'error');
+        }
+    });
+    renderLorebookControls();
 
     // Get input elements
     const startInput = document.getElementById('char_saver_start_delimiter');
@@ -239,10 +310,10 @@ eventSource.on(event_types.APP_READY, async () => {
     }
 });
 
-// Re-render settings when extension settings menu is opened
+// Restore the current chat/character selection even when the settings drawer is hidden.
 eventSource.on(event_types.CHAT_CHANGED, async () => {
     const container = document.querySelector('#extensions_settings #char-saver-settings');
-    if (container && container.offsetParent !== null) {
+    if (container) {
         await renderSettings();
     }
 });
@@ -460,90 +531,149 @@ function parseUpdateBlock(block) {
     }
 }
 
-/**
- * Gets or creates the current chat's World Info name
- */
-async function getOrCreateWorldInfoName() {
-    let worldName = chat_metadata[METADATA_KEY];
+/** Character targets use the avatar filename, never the mutable list index/name. */
+function getLorebookTarget() {
+    const context = getContext();
+    const avatar = context.groupId ? null : context.characters?.[context.characterId]?.avatar;
+    const characterBooks = Array.isArray(settings.characterLorebooks) ? settings.characterLorebooks : [];
+    const characterBook = avatar ? characterBooks.find(book => book.avatar === avatar) : null;
+    const chatSettings = chat_metadata.characterSaver;
+    const scope = chatSettings?.lorebookScope === 'chat' ? 'chat'
+        : avatar && (chatSettings?.lorebookScope === 'character' || characterBook) ? 'character' : 'chat';
+    return {
+        chatId: context.chatId,
+        groupId: context.groupId,
+        avatar,
+        metadata: chat_metadata,
+        scope,
+        worldName: (scope === 'character' ? characterBook?.worldName : chatSettings?.selectedLorebook) || '',
+    };
+}
 
-    console.log(`[${MODULE_NAME}] Detected World Info name: '${worldName}'`);
-    console.log(`[${MODULE_NAME}] Available World Info books:`, world_names);
-    console.log(`[${MODULE_NAME}] Full chat_metadata:`, chat_metadata);
+function isCurrentLorebookTarget(target) {
+    const current = getLorebookTarget();
+    return target.chatId === current.chatId && target.groupId === current.groupId
+        && target.avatar === current.avatar && target.metadata === current.metadata
+        && target.scope === current.scope && target.worldName === current.worldName;
+}
 
-    // Check if World Info exists and is valid
-    if (worldName && world_names.includes(worldName)) {
-        return worldName;
+async function saveLorebookSelection(target, worldName) {
+    if (!target.chatId || !isCurrentLorebookTarget(target)
+        || (worldName && !world_names.includes(worldName))) return false;
+    if (target.scope === 'character') {
+        if (!target.avatar) return false;
+        const books = Array.isArray(settings.characterLorebooks) ? settings.characterLorebooks : [];
+        settings.characterLorebooks = books.filter(book => book.avatar !== target.avatar);
+        settings.characterLorebooks.push({ avatar: target.avatar, worldName });
+        saveSettings();
+    } else {
+        const previous = chat_metadata.characterSaver;
+        const next = { ...previous, selectedLorebook: worldName, lorebookScope: 'chat' };
+        chat_metadata.characterSaver = next;
+        try {
+            await saveMetadata();
+        } catch (error) {
+            if (target.metadata.characterSaver === next) target.metadata.characterSaver = previous;
+            throw error;
+        }
     }
+    return true;
+}
 
-    // No World Info exists - ask user if they want to create one
-    console.log(`[${MODULE_NAME}] No World Info found. Asking user...`);
-
-    const confirm = await callGenericPopup(
-        'No lorebook is attached to this chat. Would you like to create one to save the character?',
-        POPUP_TYPE.CONFIRM,
-        '',
-        { okButton: 'Create Lorebook' }
-    );
-
-    if (!confirm) {
-        console.log(`[${MODULE_NAME}] User cancelled lorebook creation`);
-        return null;
+function notifyLorebook(message, level = 'warning') {
+    if (typeof toastr !== 'undefined') {
+        toastr[level](message, MODULE_NAME, { timeOut: 5000, preventDuplicates: true });
     }
+}
 
-    // Generate a name for the new World Info using the character name
-    const characterName = name2 || 'Chat';
-    // Format: YYYY-MM-DD HH:MM (example: 2026-06-02 14:30)
+let creatingLorebook = false;
+
+function renderLorebookControls() {
+    const select = document.getElementById('char_saver_lorebook');
+    if (!select) return;
+    const target = getLorebookTarget();
+    const scopeInput = document.getElementById('char_saver_lorebook_scope');
+    scopeInput.value = target.scope;
+    scopeInput.querySelector('option[value="character"]').disabled = !target.avatar;
+    scopeInput.disabled = !target.chatId || creatingLorebook;
+    // Native DOM options keep lorebook names out of HTML markup.
+    select.replaceChildren();
+    const addOption = (value, label, disabled = false) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        option.disabled = disabled;
+        select.appendChild(option);
+    };
+    addOption('', 'No lorebook selected');
+    for (const worldName of world_names) addOption(worldName, worldName);
+    const missing = target.worldName && !world_names.includes(target.worldName);
+    if (missing) addOption(target.worldName, `${target.worldName} (unavailable)`, true);
+    select.value = target.worldName;
+    select.disabled = !target.chatId || creatingLorebook;
+    document.getElementById('char_saver_create_lorebook').disabled = !target.chatId || creatingLorebook;
+    document.getElementById('char_saver_lorebook_status').textContent = !target.chatId
+        ? 'Open a chat to select a lorebook.' : missing
+            ? 'The selected lorebook is unavailable. Select another lorebook or refresh the list.'
+            : target.scope === 'character'
+                ? 'Shared by chats with this character that use Character scope. The chat-bound lorebook is unchanged.'
+                : 'Used only in this chat. The chat-bound lorebook is unchanged.';
+}
+
+function suggestedLorebookName() {
     const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10);
-    const timeStr = now.toTimeString().slice(0, 5); // HH:MM
-    const newWorldName = `${characterName} Chat Lorebook ${dateStr} ${timeStr}`;
+    const pad = value => String(value).padStart(2, '0');
+    const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const time = `${pad(now.getHours())}-${pad(now.getMinutes())}`;
+    const base = `${name2 || 'Chat'} Lorebook ${date}_${time}`.replace(/:/g, '-');
+    let name = base;
+    for (let suffix = 2; world_names.includes(name); suffix++) name = `${base} (${suffix})`;
+    return name;
+}
 
+async function createSelectedLorebook() {
+    const target = getLorebookTarget();
+    if (!target.chatId || creatingLorebook) return;
+    creatingLorebook = true;
+    renderLorebookControls();
     try {
-        // Create the new World Info (this also calls updateWorldInfoList internally)
-        await createNewWorldInfo(newWorldName, { interactive: false });
-
-        console.log(`[${MODULE_NAME}] Created new World Info: '${newWorldName}'`);
-
-        // Update the chat metadata to use the new World Info
-        chat_metadata[METADATA_KEY] = newWorldName;
-
-        console.log(`[${MODULE_NAME}] Set chat_metadata[${METADATA_KEY}] = '${newWorldName}'`);
-
-        // Save the metadata
-        await saveMetadata();
-
-        console.log(`[${MODULE_NAME}] Metadata saved. Current chat_metadata[METADATA_KEY]:`, chat_metadata[METADATA_KEY]);
-
-        // Wait a bit for the UI to update, then check if the lorebook is in the list
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        // Check if the lorebook is in world_names; if not, manually add it
-        let hasWorldInfo = world_names.includes(newWorldName);
-        if (!hasWorldInfo) {
-            console.warn(`[${MODULE_NAME}] Lorebook not found in world_names, manually adding it`);
-            world_names.push(newWorldName);
-            hasWorldInfo = true;
+        const answer = await callGenericPopup('Lorebook name', POPUP_TYPE.INPUT, suggestedLorebookName(), { okButton: 'Create Lorebook' });
+        if (typeof answer !== 'string') return;
+        const worldName = answer.trim();
+        if (!worldName) {
+            notifyLorebook('Enter a lorebook name.');
+            return;
         }
-
-        // Update the UI to show that a lorebook is attached
-        const chatLorebookButton = document.querySelector('.chat_lorebook_button');
-        if (chatLorebookButton) {
-            if (hasWorldInfo) {
-                chatLorebookButton.classList.add('world_set');
-                console.log(`[${MODULE_NAME}] Updated UI button state (world_set=true)`);
-            } else {
-                console.warn(`[${MODULE_NAME}] Lorebook still not found in world_names after manual add`);
-                console.log(`[${MODULE_NAME}] Current world_names:`, world_names);
-            }
-        } else {
-            console.warn(`[${MODULE_NAME}] Chat lorebook button not found`);
+        if (!isCurrentLorebookTarget(target)) return;
+        await updateWorldInfoList();
+        if (!isCurrentLorebookTarget(target)) return;
+        if (world_names.includes(worldName)) {
+            notifyLorebook('A lorebook with this name already exists. Select it from the list or use another name.');
+            return;
         }
-
-        return newWorldName;
+        const result = await createNewWorldInfo(worldName, { interactive: false });
+        if (result === false) throw new Error('Lorebook creation failed');
+        await updateWorldInfoList();
+        if (!world_names.includes(worldName) || !(await loadWorldInfo(worldName))) {
+            throw new Error('Created lorebook could not be loaded');
+        }
+        if (!await saveLorebookSelection(target, worldName)) {
+            notifyLorebook('Lorebook created. Select it in Settings; the active chat or selection changed.', 'info');
+        }
     } catch (error) {
-        console.error(`[${MODULE_NAME}] Failed to create World Info:`, error);
-        return null;
+        console.error(`[${MODULE_NAME}] Failed to create lorebook:`, error);
+        notifyLorebook('Could not create and select the lorebook. Your previous selection has been kept.', 'error');
+    } finally {
+        creatingLorebook = false;
+        renderLorebookControls();
     }
+}
+
+function getSelectedWorldInfoName() {
+    const target = getLorebookTarget();
+    if (target.chatId && target.worldName && world_names.includes(target.worldName)) return target.worldName;
+    notifyLorebook('Select an available lorebook in Extensions → Character Saver, below Pause.');
+    return null;
 }
 
 /**
@@ -721,8 +851,9 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
 /**
  * Processes a newly received message for character introductions
  */
-async function processMessage(messageId) {
+async function processMessage(messageId, selectedWorldName) {
     try {
+        if (settings.paused) return;
         const message = chat[messageId];
 
         if (!message || message.is_user || message.is_system) {
@@ -735,18 +866,14 @@ async function processMessage(messageId) {
             return;
         }
 
-        const worldName = await getOrCreateWorldInfoName();
-
-        if (!worldName) {
-            console.warn(`[${MODULE_NAME}] Could not get or create World Info`);
-            return;
-        }
-
         const characterBlocks = detectCharacterBlocks(messageContent);
 
         if (characterBlocks.length === 0) {
             return;
         }
+
+        const worldName = selectedWorldName === undefined ? getSelectedWorldInfoName() : selectedWorldName;
+        if (!worldName) return;
 
         console.log(`[${MODULE_NAME}] Found ${characterBlocks.length} character introduction(s)`);
 
@@ -831,8 +958,9 @@ function splitUpdateBlock(block) {
 /**
  * Processes a newly received message for character progression updates
  */
-async function processUpdates(messageId) {
+async function processUpdates(messageId, selectedWorldName) {
     try {
+        if (settings.paused) return;
         const message = chat[messageId];
 
         if (!message || message.is_user || message.is_system) {
@@ -845,18 +973,14 @@ async function processUpdates(messageId) {
             return;
         }
 
-        const worldName = await getOrCreateWorldInfoName();
-
-        if (!worldName) {
-            console.warn(`[${MODULE_NAME}] Could not get or create World Info for updates`);
-            return;
-        }
-
         const updateBlocks = detectUpdateBlocks(messageContent);
 
         if (updateBlocks.length === 0) {
             return;
         }
+
+        const worldName = selectedWorldName === undefined ? getSelectedWorldInfoName() : selectedWorldName;
+        if (!worldName) return;
 
         console.log(`[${MODULE_NAME}] Found ${updateBlocks.length} character progression update(s)`);
 
@@ -921,9 +1045,14 @@ async function processUpdates(messageId) {
 // Set up event listener
 eventSource.on(event_types.MESSAGE_RECEIVED, async (chatId, type) => {
     console.log(`[${MODULE_NAME}] MESSAGE_RECEIVED event: chatId=${chatId}, type=${type}`);
-    if (chatId >= 0 && chat[chatId] && !chat[chatId].is_user) {
-        await processMessage(chatId);       // Character creation (removes blocks)
-        await processUpdates(chatId);        // Character updates (removes blocks)
+    const message = chat[chatId];
+    if (!settings.paused && chatId >= 0 && message && !message.is_user && !message.is_system
+        && (detectCharacterBlocks(message.mes || '').length || detectUpdateBlocks(message.mes || '').length)) {
+        // Resolve once so a selection change cannot split one message across books.
+        const worldName = getSelectedWorldInfoName();
+        if (!worldName) return;
+        await processMessage(chatId, worldName);
+        if (chat[chatId] === message) await processUpdates(chatId, worldName);
     }
 });
 
@@ -935,7 +1064,7 @@ if (typeof globalThis !== 'undefined') {
         MODULE_NAME,
         detectCharacterBlocks,
         parseCharacterBlock,
-        getOrCreateWorldInfoName,
+        getSelectedWorldInfoName,
         processMessage,
         detectUpdateBlocks,
         parseUpdateBlock,
