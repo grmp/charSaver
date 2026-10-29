@@ -368,7 +368,12 @@ test('closing comment cleanup supports append mode and explicit comment delimite
         env.context.chat.push({ mes: block });
         await env.api.processUpdates(i);
     }
-    assert.equal(env.world.entries[0].content, `${content}\n${content}`);
+    // The identical block is stored only once; a different block still appends.
+    assert.equal(env.world.entries[0].content, content);
+    const other = '<npc_update name="Solene">Different update.</npc_update>';
+    env.context.chat.push({ mes: `<!-- update character start\n${other}\n<!-- update character end -->` });
+    await env.api.processUpdates(2);
+    assert.equal(env.world.entries[0].content, `${content}\n${other}`);
 });
 
 test('custom non-comment delimiters preserve trailing comment openers and inner delimiter text', () => {
@@ -1056,4 +1061,122 @@ test('failed rollback is reported without modifying the destination chat', async
     assert.equal(await env.api.createLorebookFromInput('New book'), null);
     assert.equal(env.context.chat_metadata.world_info, 'Test');
     assert.equal(warnings.length, 1);
+});
+
+test('duplicate MESSAGE_RECEIVED events for one message save each block only once', async () => {
+    const env = setup();
+    const update = '<npc_update name="Alice">Update</npc_update>';
+    env.context.chat.push({ mes: wrap('<npc name="Alice">Creation</npc>') + '\n' + wrap(update, true) });
+    await Promise.all([env.handlers.message(0), env.handlers.message(0), env.handlers.message(0)]);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment),
+        ['Character: Alice', 'All NPC', 'Update for Alice']);
+    assert.equal(env.world.entries[1].content, 'Known NPC=\nname=Alice');
+    assert.equal(env.world.entries[2].content, update);
+    assert.equal(env.calls.save, 2);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('separate mode: duplicate concurrent events create only one numbered entry', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const update = 'Name: Alice\nPromoted.';
+    env.context.chat.push({ mes: wrap(update, true) });
+    await Promise.all([env.handlers.message(0), env.handlers.message(0)]);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update Alice #1']);
+    assert.equal(env.world.entries[0].content, update);
+    assert.equal(env.calls.save, 1);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('identical update block twice in one message is appended only once', async () => {
+    const env = setup();
+    const update = 'Name: Alice\nPromoted to Captain.';
+    env.context.chat.push({ mes: `${wrap(update, true)}\n${wrap(update, true)}` });
+    await env.handlers.message(0);
+    const entries = Object.values(env.world.entries).filter(e => (e.comment || '').startsWith('Update'));
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].content, update);
+    assert.equal(env.calls.save, 1);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('separate mode: identical update block twice in one message creates only one entry', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const update = 'Name: Alice\nPromoted to Captain.';
+    env.context.chat.push({ mes: `${wrap(update, true)}\n${wrap(update, true)}` });
+    await env.handlers.message(0);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update Alice #1']);
+    assert.equal(env.calls.save, 1);
+    assert.equal(env.context.chat[0].mes, '');
+});
+
+test('regenerated message with an identical update block does not append it again', async () => {
+    const env = setup();
+    const update = 'Name: Alice\nPromoted to Captain.';
+    env.context.chat.push({ mes: wrap(update, true) });
+    await env.handlers.message(0);
+    env.context.chat[0].mes = wrap(update, true);
+    await env.handlers.message(0);
+    const entries = Object.values(env.world.entries).filter(e => (e.comment || '').startsWith('Update'));
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].content, update);
+    assert.equal(env.calls.save, 1);
+});
+
+test('regenerated message in separate mode with identical block does not create a second entry', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    const update = 'Name: Alice\nPromoted to Captain.';
+    env.context.chat.push({ mes: wrap(update, true) });
+    await env.handlers.message(0);
+    env.context.chat[0].mes = wrap(update, true);
+    await env.handlers.message(0);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update Alice #1']);
+    assert.equal(env.calls.save, 1);
+});
+
+test('identical character creation twice (duplicate event) creates one entry and one All NPC line', async () => {
+    const env = setup();
+    const npc = '<npc name="Alice" role="captain">Description.</npc>';
+    env.context.chat.push({ mes: wrap(npc) });
+    await Promise.all([env.handlers.message(0), env.handlers.message(0)]);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Character: Alice', 'All NPC']);
+    assert.equal(env.world.entries[1].content, 'Known NPC=\nname=Alice, role=captain');
+    assert.equal(env.calls.save, 1);
+});
+
+test('distinct updates still append and numbered entries still increment', async () => {
+    const env = setup({ separateUpdateEntries: true });
+    env.context.chat.push({ mes: wrap('Name: Alice\nFirst.', true) });
+    await env.handlers.message(0);
+    env.context.chat.push({ mes: wrap('Name: Alice\nSecond.', true) });
+    await env.handlers.message(1);
+    // Similar-but-different content must not be treated as duplicate.
+    env.context.chat.push({ mes: wrap('Name: Alice\nFirst. Extra line.', true) });
+    await env.handlers.message(2);
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment),
+        ['Update Alice #1', 'Update Alice #2', 'Update Alice #3']);
+    assert.equal(env.calls.save, 3);
+});
+
+test('append mode: distinct updates still append to the same entry', async () => {
+    const env = setup();
+    env.context.chat.push({ mes: wrap('Name: Alice\nFirst.', true) });
+    await env.handlers.message(0);
+    env.context.chat.push({ mes: wrap('Name: Alice\nSecond.', true) });
+    await env.handlers.message(1);
+    const entries = Object.values(env.world.entries).filter(e => (e.comment || '').startsWith('Update'));
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].content, 'Name: Alice\nFirst.\nName: Alice\nSecond.');
+    assert.equal(env.calls.save, 2);
+});
+
+test('duplicate detection also matches legacy numbered entries', async () => {
+    const env = setup({ separateUpdateEntries: true }, { Test: { entries: {
+        0: { uid: 0, comment: 'Update #4 for Alice', content: 'Name: Alice\nOld.' },
+    } } });
+    await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Name: Alice\nOld.');
+    assert.deepEqual(Object.values(env.world.entries).map(e => e.comment), ['Update #4 for Alice']);
+    assert.equal(env.calls.save, 0);
+    await env.api.createOrUpdateLorebookEntry('Test', 'Alice', 'Name: Alice\nNew.');
+    assert.equal(env.world.entries[1].comment, 'Update Alice #5');
+    assert.equal(env.calls.save, 1);
 });
