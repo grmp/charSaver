@@ -241,7 +241,7 @@ MIT License
 
 ## Author
 
-hornysilicon
+Original: hornysilicon
 
 ## Version
 
