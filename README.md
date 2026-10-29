@@ -4,7 +4,7 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
 
 ## Features
 
-- **Character Creation**: Automatically detects character introductions in AI responses and creates chat-bound lorebook entries
+- **Character Creation**: Automatically detects character introductions in AI responses and creates lorebook entries in the configured lorebook
 - **All NPC**: Appends each new character's XML attributes to a shared "All NPC" lorebook entry, one character per line
 - **Character Updates**: Detects character progression/updates and either appends to "Update for [Name]" or creates separate numbered entries
 - Removes character introduction and update blocks from the chat after processing
@@ -14,7 +14,7 @@ A SillyTavern extension that automatically creates chat lorebook entries when th
   - `Name: John Doe`
   - `**John Doe**`
   - `<npc name="John Doe">...</npc>` and `<npc_update name="John Doe">...</npc_update>` inside the configured delimiters
-- Auto-creates a lorebook if none exists
+- Auto-creates a lorebook if none exists (names never contain ":")
 - Shows toast notifications when characters are added or updated
 
 ## Installation
@@ -195,6 +195,10 @@ Regression tests can be run with `node --test test/*.test.mjs`.
 
 The extension settings can be found in **Extensions → Character Saver**:
 
+- **Pause for this Chat**: Stops new and pending message processing in the current chat (default: off). The setting is saved per chat and restored when switching chats or reloading. Unsaved delimiter blocks remain in the messages; a save already in progress may finish, and only its successfully saved blocks are removed. A lorebook creation already in progress may finish too: the book stays selected in the same chat, while entry processing remains cancelled. Unpausing allows future messages to be processed and does not automatically replay skipped messages or restart cancelled work.
+- **Lorebook Setting valid for**: Chooses whether the lorebook selection applies to the current chat (default) or to all chats of the current character card. Cards with the same display name have independent settings. Older name-based settings are migrated only when the name identifies a single card; ambiguous choices must be selected again.
+- **Lorebook**: Selects the lorebook where characters are saved and attaches it as the active chat lorebook so SillyTavern can use its entries in prompts. Existing native chat lorebook assignments remain usable. Character-scoped selections are attached when opening each chat of that card. With "(not set)" the extension asks before creating a new lorebook.
+- **Create New Lorebook**: Creates a new lorebook and selects it for the current scope. Lorebook names must not contain ":"; colons are replaced automatically. If the chat, character, scope, or selection changes during creation, the new empty book is removed instead of replacing the new target's selection. A book edited in the meantime is preserved, and a warning identifies books that could not be cleaned up. Rejected creations do not change the current selection.
 - **Character Creation Start Delimiter**: Marks the beginning of a character introduction (default: `<!-- new character start`)
 - **Character Creation End Delimiter**: Marks the end of a character introduction (default: `new character end -->`)
 - **Character Update Start Delimiter**: Marks the beginning of a character update (default: `<!-- update character start`)

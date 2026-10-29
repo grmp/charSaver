@@ -6,6 +6,40 @@
         </div>
         <div class="inline-drawer-content">
             <div class="marginBot5">
+                <label class="checkbox_label" for="char_saver_paused_for_chat">
+                    <input id="char_saver_paused_for_chat" type="checkbox">
+                    <span>Pause for this Chat</span>
+                </label>
+                <small>Stops new and pending processing in this chat. Unsaved delimiter blocks stay in the messages. A save already in progress may finish.</small>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
+                <label>Lorebook</label>
+                <div class="marginBot5">
+                    <label for="char_saver_lorebook_scope">Lorebook Setting valid for</label>
+                    <select id="char_saver_lorebook_scope" class="text_pole">
+                        <option value="chat">This Chat</option>
+                        <option value="character">This Character</option>
+                    </select>
+                    <small>"This Chat": the lorebook setting applies to the current chat only. "This Character": the setting applies to all chats of the current character.</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_lorebook_select">Lorebook</label>
+                    <select id="char_saver_lorebook_select" class="text_pole"></select>
+                    <small>Select the lorebook where characters are saved. "(not set)" asks before creating a new lorebook when a character is introduced.</small>
+                </div>
+                <div class="marginBot5">
+                    <label for="char_saver_new_lorebook_name">Create New Lorebook</label>
+                    <input id="char_saver_new_lorebook_name" class="text_pole" type="text" placeholder="My Lorebook">
+                    <small>Creates a new lorebook with this name and selects it. Names must not contain ":".</small>
+                </div>
+            </div>
+
+            <hr class="sysHR">
+
+            <div class="marginBot5">
                 <label>Character Creation</label>
                 <div class="marginBot5">
                     <label for="char_saver_start_delimiter">Start Delimiter</label>
