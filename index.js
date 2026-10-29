@@ -29,6 +29,9 @@ let settings = { ...defaultSettings };
 // Serialize all entry writes to a lorebook, including character creation.
 const worldWriteQueues = new Map();
 
+// Message ids currently being processed, guarding against duplicate events.
+const processingMessageIds = new Set();
+
 async function queueWorldWrite(worldName, write) {
     const previous = worldWriteQueues.get(worldName) || Promise.resolve();
     const pending = previous.catch(() => {}).then(write);
@@ -369,6 +372,7 @@ eventSource.on(event_types.APP_READY, async () => {
 // Refresh chat-specific settings even when the extensions drawer is closed.
 eventSource.on(event_types.CHAT_CHANGED, async () => {
     chatGeneration++;
+    processingMessageIds.clear();
     activateConfiguredLorebook();
     const container = document.querySelector('#extensions_settings #char-saver-settings');
     if (container) {
@@ -853,6 +857,35 @@ function findUpdateEntry(worldData, characterName) {
 }
 
 /**
+ * Finds all update entries (appended and numbered) for a character.
+ */
+function findUpdateEntries(worldData, characterName) {
+    const found = [];
+    for (const entry of Object.values(worldData.entries || {})) {
+        const comment = entry.comment || '';
+        const current = /^Update ([\s\S]*) #([1-9]\d*)$/.exec(comment);
+        const legacy = /^Update #([1-9]\d*) for ([\s\S]*)$/.exec(comment);
+        if (comment === `Update for ${characterName}`
+            || (current && current[1] === characterName)
+            || (legacy && legacy[2] === characterName)) {
+            found.push(entry);
+        }
+    }
+    return found;
+}
+
+/**
+ * Exact block-boundary check so only identical stored updates count as duplicates.
+ */
+function contentContainsBlock(content, block) {
+    const text = String(content || '');
+    return text === block
+        || text.startsWith(`${block}\n`)
+        || text.endsWith(`\n${block}`)
+        || text.includes(`\n${block}\n`);
+}
+
+/**
  * Creates a new lorebook entry for a character
  */
 async function createLorebookEntry(worldName, characterName, description, processing = createProcessingContext()) {
@@ -871,6 +904,13 @@ async function createLorebookEntry(worldName, characterName, description, proces
             }
 
             console.log(`[${MODULE_NAME}] World Info loaded, entries before:`, Object.keys(worldData.entries || {}).length);
+
+            const duplicateEntry = Object.values(worldData.entries || {})
+                .find(entry => entry.comment === `Character: ${characterName}` && entry.content === description);
+            if (duplicateEntry) {
+                console.log(`[${MODULE_NAME}] Identical entry already exists for '${characterName}', skipping`);
+                return true;
+            }
 
             const newEntry = createWorldInfoEntry(worldName, worldData);
 
@@ -909,7 +949,9 @@ async function createLorebookEntry(worldName, characterName, description, proces
             if (!allNpcEntry.content?.startsWith('Known NPC=')) {
                 allNpcEntry.content = allNpcEntry.content ? `Known NPC=\n${allNpcEntry.content}` : 'Known NPC=';
             }
-            allNpcEntry.content = allNpcEntry.content ? `${allNpcEntry.content}\n${line}` : line;
+            if (!allNpcEntry.content.split('\n').includes(line)) {
+                allNpcEntry.content = allNpcEntry.content ? `${allNpcEntry.content}\n${line}` : line;
+            }
 
             console.log(`[${MODULE_NAME}] Saving World Info with`, Object.keys(worldData.entries || {}).length, 'entries');
 
@@ -970,6 +1012,13 @@ async function createOrUpdateLorebookEntry(worldName, characterName, updateConte
             if (!worldData) {
                 console.error(`[${MODULE_NAME}] Failed to load World Info: ${worldName}`);
                 return false;
+            }
+
+            const duplicateUpdate = findUpdateEntries(worldData, characterName)
+                .find(entry => contentContainsBlock(entry.content, updateContent));
+            if (duplicateUpdate) {
+                console.log(`[${MODULE_NAME}] Identical update already stored for '${characterName}', skipping`);
+                return true;
             }
 
             const number = separateUpdates ? nextUpdateNumber(worldData, worldName, characterName) : null;
@@ -1240,9 +1289,18 @@ async function processUpdates(messageId, processing = createProcessingContext())
 eventSource.on(event_types.MESSAGE_RECEIVED, async (chatId, type) => {
     console.log(`[${MODULE_NAME}] MESSAGE_RECEIVED event: chatId=${chatId}, type=${type}`);
     if (chatId >= 0 && chat[chatId] && !chat[chatId].is_user) {
-        const processing = createProcessingContext();
-        await processMessage(chatId, processing);       // Character creation (removes blocks)
-        await processUpdates(chatId, processing);        // Character updates (removes blocks)
+        if (processingMessageIds.has(chatId)) {
+            console.log(`[${MODULE_NAME}] Message ${chatId} already being processed, skipping duplicate event`);
+            return;
+        }
+        processingMessageIds.add(chatId);
+        try {
+            const processing = createProcessingContext();
+            await processMessage(chatId, processing);       // Character creation (removes blocks)
+            await processUpdates(chatId, processing);        // Character updates (removes blocks)
+        } finally {
+            processingMessageIds.delete(chatId);
+        }
     }
 });
 
